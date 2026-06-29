@@ -45,10 +45,10 @@ for (const color of Object.keys(HOME_TOKEN_POSITIONS) as Color[]) {
 
 // 3D token gradient colors
 const TOKEN_COLORS: Record<Color, { light: string; dark: string; border: string }> = {
-  red:    { light: '#ff6b6b', dark: '#c0392b', border: '#922b21' },
-  blue:   { light: '#5dade2', dark: '#1a5276', border: '#1b4f72' },
-  green:  { light: '#2ecc71', dark: '#1e8449', border: '#196f3d' },
-  yellow: { light: '#f7dc6f', dark: '#d4a017', border: '#b7950b' },
+  red:    { light: '#fca5a5', dark: '#dc2626', border: '#b91c1c' },
+  blue:   { light: '#93c5fd', dark: '#2563eb', border: '#1d4ed8' },
+  green:  { light: '#6ee7b7', dark: '#059669', border: '#047857' },
+  yellow: { light: '#fde047', dark: '#ca8a04', border: '#a16207' },
 }
 
 // Safe square star positions (non-starting safe squares)
@@ -127,38 +127,38 @@ export default function LudoBoard({ tokens, currentColor, validMoves, onTokenCli
   function getCellStyle(row: number, col: number): { className: string; style?: React.CSSProperties } {
     const key = `${row},${col}`
 
-    // Home areas
+    // Home areas — softer 500-level outer, very light inner yards
     if (row <= 5 && col <= 5) {
       const isYard = row >= 1 && row <= 4 && col >= 1 && col <= 4
-      return { className: isYard ? 'bg-red-50' : 'bg-red-700' }
+      return { className: isYard ? 'bg-red-50' : 'bg-red-500' }
     }
     if (row <= 5 && col >= 9) {
       const isYard = row >= 1 && row <= 4 && col >= 10 && col <= 13
-      return { className: isYard ? 'bg-blue-50' : 'bg-blue-700' }
+      return { className: isYard ? 'bg-blue-50' : 'bg-blue-500' }
     }
     if (row >= 9 && col >= 9) {
       const isYard = row >= 10 && row <= 13 && col >= 10 && col <= 13
-      return { className: isYard ? 'bg-emerald-50' : 'bg-emerald-700' }
+      return { className: isYard ? 'bg-emerald-50' : 'bg-emerald-500' }
     }
     if (row >= 9 && col <= 5) {
       const isYard = row >= 10 && row <= 13 && col >= 1 && col <= 4
-      return { className: isYard ? 'bg-amber-50' : 'bg-amber-600' }
+      return { className: isYard ? 'bg-yellow-50' : 'bg-yellow-400' }
     }
 
     // Center (handled by SVG overlay)
     if (row >= 6 && row <= 8 && col >= 6 && col <= 8) return { className: 'bg-white' }
 
-    // Final lanes — richer gradient tones
-    if (col === 7 && row >= 9 && row <= 13) return { className: 'bg-red-400' }
-    if (row === 7 && col >= 1 && col <= 5)  return { className: 'bg-blue-400' }
-    if (col === 7 && row >= 1 && row <= 5)  return { className: 'bg-emerald-400' }
-    if (row === 7 && col >= 9 && col <= 13) return { className: 'bg-amber-400' }
+    // Final lanes
+    if (col === 7 && row >= 9 && row <= 13) return { className: 'bg-red-300' }
+    if (row === 7 && col >= 1 && col <= 5)  return { className: 'bg-blue-300' }
+    if (col === 7 && row >= 1 && row <= 5)  return { className: 'bg-emerald-300' }
+    if (row === 7 && col >= 9 && col <= 13) return { className: 'bg-yellow-200' }
 
-    // Starting squares (entry to each color's track)
-    if (row === 13 && col === 6) return { className: 'bg-red-300' }
-    if (row === 6  && col === 1) return { className: 'bg-blue-300' }
-    if (row === 1  && col === 8) return { className: 'bg-emerald-300' }
-    if (row === 8  && col === 13) return { className: 'bg-amber-300' }
+    // Starting squares
+    if (row === 13 && col === 6) return { className: 'bg-red-200' }
+    if (row === 6  && col === 1) return { className: 'bg-blue-200' }
+    if (row === 1  && col === 8) return { className: 'bg-emerald-200' }
+    if (row === 8  && col === 13) return { className: 'bg-yellow-200' }
 
     // Safe squares
     if (SAFE_STAR_COORDS.has(key)) return { className: 'bg-amber-100' }
@@ -247,21 +247,21 @@ export default function LudoBoard({ tokens, currentColor, validMoves, onTokenCli
 
       {/* Home yard rounded overlays */}
       {/* Red yard */}
-      <div className="absolute rounded-2xl border-4 border-red-800/30 pointer-events-none"
+      <div className="absolute rounded-2xl border-4 border-red-400/40 pointer-events-none"
         style={{ left: CELL + 4, top: CELL + 4, width: 4*CELL - 8, height: 4*CELL - 8,
-          boxShadow: 'inset 0 2px 8px rgba(0,0,0,0.15)' }} />
+          boxShadow: 'inset 0 2px 8px rgba(0,0,0,0.1)' }} />
       {/* Blue yard */}
-      <div className="absolute rounded-2xl border-4 border-blue-800/30 pointer-events-none"
+      <div className="absolute rounded-2xl border-4 border-blue-400/40 pointer-events-none"
         style={{ left: 10*CELL + 4, top: CELL + 4, width: 4*CELL - 8, height: 4*CELL - 8,
-          boxShadow: 'inset 0 2px 8px rgba(0,0,0,0.15)' }} />
+          boxShadow: 'inset 0 2px 8px rgba(0,0,0,0.1)' }} />
       {/* Green yard */}
-      <div className="absolute rounded-2xl border-4 border-emerald-800/30 pointer-events-none"
+      <div className="absolute rounded-2xl border-4 border-emerald-400/40 pointer-events-none"
         style={{ left: 10*CELL + 4, top: 10*CELL + 4, width: 4*CELL - 8, height: 4*CELL - 8,
-          boxShadow: 'inset 0 2px 8px rgba(0,0,0,0.15)' }} />
+          boxShadow: 'inset 0 2px 8px rgba(0,0,0,0.1)' }} />
       {/* Yellow yard */}
-      <div className="absolute rounded-2xl border-4 border-amber-800/30 pointer-events-none"
+      <div className="absolute rounded-2xl border-4 border-yellow-500/40 pointer-events-none"
         style={{ left: CELL + 4, top: 10*CELL + 4, width: 4*CELL - 8, height: 4*CELL - 8,
-          boxShadow: 'inset 0 2px 8px rgba(0,0,0,0.15)' }} />
+          boxShadow: 'inset 0 2px 8px rgba(0,0,0,0.1)' }} />
 
       {/* Center SVG — 4 color triangles meeting at middle */}
       <svg
@@ -270,13 +270,13 @@ export default function LudoBoard({ tokens, currentColor, validMoves, onTokenCli
         viewBox="0 0 3 3"
       >
         {/* Red — from bottom */}
-        <polygon points="0,3 3,3 1.5,1.5" fill="#dc2626" opacity="0.9" />
+        <polygon points="0,3 3,3 1.5,1.5" fill="#ef4444" opacity="0.9" />
         {/* Blue — from left */}
-        <polygon points="0,0 0,3 1.5,1.5" fill="#2563eb" opacity="0.9" />
+        <polygon points="0,0 0,3 1.5,1.5" fill="#3b82f6" opacity="0.9" />
         {/* Green — from top */}
-        <polygon points="0,0 3,0 1.5,1.5" fill="#16a34a" opacity="0.9" />
+        <polygon points="0,0 3,0 1.5,1.5" fill="#10b981" opacity="0.9" />
         {/* Yellow — from right */}
-        <polygon points="3,0 3,3 1.5,1.5" fill="#d97706" opacity="0.9" />
+        <polygon points="3,0 3,3 1.5,1.5" fill="#eab308" opacity="0.9" />
         {/* Center star circle */}
         <circle cx="1.5" cy="1.5" r="0.55" fill="#fef3c7" stroke="white" strokeWidth="0.08" />
         <text x="1.5" y="1.78" textAnchor="middle" fontSize="0.65" fill="#92400e" fontWeight="bold">★</text>
@@ -306,13 +306,13 @@ export default function LudoBoard({ tokens, currentColor, validMoves, onTokenCli
       )}
 
       {/* Home area color labels */}
-      <div className="absolute font-black text-white/80 text-[10px] tracking-wider pointer-events-none select-none"
+      <div className="absolute font-black text-white/90 text-[10px] tracking-wider pointer-events-none select-none drop-shadow"
         style={{ left: 1.2*CELL, top: 0.3*CELL }}>RED</div>
-      <div className="absolute font-black text-white/80 text-[10px] tracking-wider pointer-events-none select-none"
+      <div className="absolute font-black text-white/90 text-[10px] tracking-wider pointer-events-none select-none drop-shadow"
         style={{ left: 10.2*CELL, top: 0.3*CELL }}>BLUE</div>
-      <div className="absolute font-black text-white/80 text-[10px] tracking-wider pointer-events-none select-none"
+      <div className="absolute font-black text-white/90 text-[10px] tracking-wider pointer-events-none select-none drop-shadow"
         style={{ left: 10*CELL, top: 14.4*CELL }}>GREEN</div>
-      <div className="absolute font-black text-white/80 text-[10px] tracking-wider pointer-events-none select-none"
+      <div className="absolute font-black text-amber-900/80 text-[10px] tracking-wider pointer-events-none select-none drop-shadow"
         style={{ left: 0.8*CELL, top: 14.4*CELL }}>YELLOW</div>
     </div>
   )
