@@ -43,16 +43,6 @@ export default function SignUpPage() {
         </div>
 
         <div>
-          <label className="block text-sm font-semibold text-amber-800 mb-1">Phone Number</label>
-          <input
-            name="phone"
-            type="tel"
-            placeholder="+1 234 567 8900"
-            className="w-full px-4 py-3 rounded-xl border-2 border-amber-200 focus:border-amber-500 focus:outline-none bg-white text-amber-900 placeholder:text-amber-300"
-          />
-        </div>
-
-        <div>
           <label className="block text-sm font-semibold text-amber-800 mb-1">Password</label>
           <div className="relative">
             <input

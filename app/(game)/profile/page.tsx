@@ -3,16 +3,29 @@
 import { useEffect, useState, useActionState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { updateProfile } from '@/lib/actions/auth'
+import Link from 'next/link'
 
-const AVATARS = ['🦁', '🐯', '🐻', '🦊', '🐺', '🐸', '🐧', '🦅']
+const AVATARS = [
+  { id: 1,  emoji: '🤵',  bg: 'from-blue-900 to-blue-600',       label: 'CEO' },
+  { id: 2,  emoji: '👩‍💼', bg: 'from-purple-800 to-purple-600',   label: 'Director' },
+  { id: 3,  emoji: '🤴',  bg: 'from-yellow-700 to-amber-500',    label: 'Prince' },
+  { id: 4,  emoji: '👸',  bg: 'from-pink-700 to-rose-400',       label: 'Princess' },
+  { id: 5,  emoji: '🧔',  bg: 'from-slate-700 to-slate-500',     label: 'Mogul' },
+  { id: 6,  emoji: '👩‍🎤', bg: 'from-rose-700 to-rose-500',      label: 'Star' },
+  { id: 7,  emoji: '🕺',  bg: 'from-indigo-700 to-indigo-500',   label: 'VIP' },
+  { id: 8,  emoji: '💃',  bg: 'from-fuchsia-700 to-fuchsia-500', label: 'Elite' },
+  { id: 9,  emoji: '🧑‍💼', bg: 'from-teal-700 to-teal-500',      label: 'Executive' },
+  { id: 10, emoji: '👩‍🚀', bg: 'from-cyan-700 to-cyan-500',      label: 'Visionary' },
+  { id: 11, emoji: '🏋️', bg: 'from-orange-700 to-orange-500',   label: 'Champion' },
+  { id: 12, emoji: '🧕',  bg: 'from-emerald-700 to-emerald-500', label: 'Icon' },
+]
 
 interface Profile {
   display_name: string
-  phone_number: string | null
   avatar_id: number
   games_played: number
   wins: number
-  losses: number
+  balance?: number
 }
 
 export default function ProfilePage() {
@@ -26,12 +39,13 @@ export default function ProfilePage() {
       if (!user) return
       supabase.from('profiles').select('*').eq('id', user.id).single().then(({ data }) => {
         if (data) {
-          setProfile(data)
+          setProfile(data as Profile)
           setSelectedAvatar(data.avatar_id ?? 1)
         }
       })
     })
-  }, [supabase])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   if (!profile) {
     return <div className="flex-1 flex items-center justify-center text-amber-500">Loading…</div>
@@ -41,14 +55,25 @@ export default function ProfilePage() {
     ? Math.round((profile.wins / profile.games_played) * 100)
     : 0
 
+  const activeAvatar = AVATARS.find(a => a.id === selectedAvatar) ?? AVATARS[0]
+  const balance = (profile as any).balance ?? 0
+
   return (
-    <div className="px-6 py-8 flex flex-col gap-6 max-w-md mx-auto w-full">
+    <div className="px-5 py-6 flex flex-col gap-5 max-w-md mx-auto w-full">
+      {/* Avatar hero */}
       <div className="flex flex-col items-center gap-3">
-        <div className="text-6xl">{AVATARS[selectedAvatar - 1]}</div>
-        <h2 className="text-2xl font-black text-amber-900">{profile.display_name}</h2>
-        {profile.phone_number && (
-          <p className="text-amber-500 text-sm">📱 {profile.phone_number.replace(/(\+\d{1,3})\d+(\d{4})/, '$1••••••$2')}</p>
-        )}
+        <div className={`w-24 h-24 rounded-3xl bg-gradient-to-br ${activeAvatar.bg} flex items-center justify-center text-5xl shadow-lg`}>
+          {activeAvatar.emoji}
+        </div>
+        <div className="text-center">
+          <h2 className="text-2xl font-black text-amber-900">{profile.display_name}</h2>
+          <div className="text-amber-500 text-sm font-semibold">{activeAvatar.label}</div>
+        </div>
+        <div className="flex items-center gap-2 bg-amber-100 px-4 py-1.5 rounded-full">
+          <span className="text-sm font-black text-amber-700">💰 ${balance.toLocaleString()}</span>
+          <Link href="/shop" className="text-xs text-amber-500 hover:text-amber-700 underline">Shop</Link>
+          <Link href="/collection" className="text-xs text-amber-500 hover:text-amber-700 underline">Collection</Link>
+        </div>
       </div>
 
       {/* Stats */}
@@ -58,7 +83,7 @@ export default function ProfilePage() {
           { label: 'Wins', value: profile.wins },
           { label: 'Win Rate', value: `${winRate}%` },
         ].map(s => (
-          <div key={s.label} className="bg-white rounded-2xl p-3 text-center shadow-sm">
+          <div key={s.label} className="bg-white rounded-2xl p-3 text-center shadow-sm border border-amber-100">
             <div className="text-2xl font-black text-amber-700">{s.value}</div>
             <div className="text-xs text-amber-500">{s.label}</div>
           </div>
@@ -66,15 +91,11 @@ export default function ProfilePage() {
       </div>
 
       {/* Edit form */}
-      <form action={formAction} className="flex flex-col gap-4 bg-white rounded-2xl p-4 shadow-sm">
+      <form action={formAction} className="flex flex-col gap-4 bg-white rounded-2xl p-4 shadow-sm border border-amber-100">
         <h3 className="font-bold text-amber-900">Edit Profile</h3>
 
-        {state?.error && (
-          <p className="text-red-600 text-sm">{state.error}</p>
-        )}
-        {state?.success && (
-          <p className="text-green-600 text-sm">Profile updated!</p>
-        )}
+        {state?.error && <p className="text-red-600 text-sm">{state.error}</p>}
+        {state?.success && <p className="text-green-600 text-sm">Profile updated!</p>}
 
         <div>
           <label className="block text-sm font-semibold text-amber-800 mb-1">Display Name</label>
@@ -88,16 +109,23 @@ export default function ProfilePage() {
         </div>
 
         <div>
-          <label className="block text-sm font-semibold text-amber-800 mb-2">Avatar</label>
+          <label className="block text-sm font-semibold text-amber-800 mb-2">Choose Avatar</label>
           <div className="grid grid-cols-4 gap-2">
-            {AVATARS.map((avatar, i) => (
+            {AVATARS.map((avatar) => (
               <button
-                key={i}
+                key={avatar.id}
                 type="button"
-                onClick={() => setSelectedAvatar(i + 1)}
-                className={`text-3xl p-2 rounded-xl border-2 transition-colors ${selectedAvatar === i + 1 ? 'border-amber-500 bg-amber-50' : 'border-transparent hover:border-amber-200'}`}
+                onClick={() => setSelectedAvatar(avatar.id)}
+                className={`flex flex-col items-center gap-1 p-1.5 rounded-2xl transition-all ${
+                  selectedAvatar === avatar.id
+                    ? 'ring-3 ring-amber-500 ring-offset-1 scale-105'
+                    : 'hover:scale-105'
+                }`}
               >
-                {avatar}
+                <div className={`w-full aspect-square rounded-xl bg-gradient-to-br ${avatar.bg} flex items-center justify-center text-2xl shadow-sm`}>
+                  {avatar.emoji}
+                </div>
+                <span className="text-[9px] text-amber-600 font-semibold">{avatar.label}</span>
               </button>
             ))}
           </div>

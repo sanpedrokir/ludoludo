@@ -4,11 +4,16 @@ import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import LudoBoard from '@/components/board/LudoBoard'
 import BoardScaler from '@/components/board/BoardScaler'
+import MusicPlayer from '@/components/MusicPlayer'
 import { createClient } from '@/lib/supabase/client'
 import { getValidMoves, applyMove, nextPlayer, isGameFinished, assignRank, countDoneTokens } from '@/lib/game/engine'
 import { chooseComputerMove, rollDice } from '@/lib/game/ai'
 import { Color, TokenState, GameState, PlayerState } from '@/lib/game/types'
 import { leaveRoom, recordOnlineGameResult } from '@/lib/actions/game'
+import { addBalance } from '@/lib/actions/economy'
+
+const WIN_REWARDS = [10000, 5000, 1000, 200]
+const RANK_LABELS = ['🥇 1st', '🥈 2nd', '🥉 3rd', '4th']
 
 interface DbGameState {
   id: string
@@ -62,7 +67,7 @@ export default function OnlineGameClient({ room, initialGameState, currentUserId
       difficulty: p.difficulty as PlayerState['difficulty'],
       turnOrder: p.turn_order,
       playerId: p.player_id,
-      displayName: p.is_computer ? `CPU` : (p.profiles?.display_name ?? 'Player'),
+      displayName: p.is_computer ? 'CPU' : (p.profiles?.display_name ?? 'Player'),
       tokensDone: 0,
       capturesMade: 0,
       status: p.status as PlayerState['status'],
@@ -75,6 +80,7 @@ export default function OnlineGameClient({ room, initialGameState, currentUserId
     })))
   )
   const [turnTimer, setTurnTimer] = useState(30)
+  const [earnNotif, setEarnNotif] = useState<string | null>(null)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const aiTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const resultSubmittedRef = useRef(false)
@@ -87,7 +93,12 @@ export default function OnlineGameClient({ room, initialGameState, currentUserId
     ? getValidMoves(gameState.tokens, currentPlayer.color, gameState.diceValue)
     : []
 
-  // Persist state to Supabase
+  function earnCash(amount: number, label: string) {
+    setEarnNotif(`+$${amount.toLocaleString()} ${label}`)
+    setTimeout(() => setEarnNotif(null), 2500)
+    addBalance(amount).catch(console.error)
+  }
+
   async function persistState(state: GameState) {
     await supabase
       .from('game_states')
@@ -101,18 +112,23 @@ export default function OnlineGameClient({ room, initialGameState, currentUserId
       .eq('room_id', room.id)
   }
 
-  // Record this player's result once when the game ends
+  // Record result once on game end
   useEffect(() => {
     if (!isFinished || resultSubmittedRef.current || !myColor) return
     resultSubmittedRef.current = true
     const myPlayer = gameState.players.find(p => p.color === myColor)
     if (!myPlayer) return
     const anyRanked = gameState.players.some(p => p.rank != null)
-    const won = anyRanked ? myPlayer.rank === 1 : myPlayer.status === 'active'
-    recordOnlineGameResult(won)
+    const myRank = anyRanked
+      ? (myPlayer.rank ?? gameState.players.length)
+      : (myPlayer.status === 'active' ? 1 : gameState.players.length)
+    const reward = WIN_REWARDS[Math.min(myRank - 1, WIN_REWARDS.length - 1)]
+    setEarnNotif(`+$${reward.toLocaleString()} ${RANK_LABELS[Math.min(myRank - 1, 3)]} Place!`)
+    recordOnlineGameResult(myRank)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isFinished])
 
-  // Subscribe to realtime game state changes
+  // Realtime game state
   useEffect(() => {
     const channel = supabase
       .channel(`game:${room.id}`)
@@ -131,11 +147,10 @@ export default function OnlineGameClient({ room, initialGameState, currentUserId
         }
       )
       .subscribe()
-
     return () => { supabase.removeChannel(channel) }
   }, [room.id, supabase])
 
-  // Subscribe to player forfeit events
+  // Forfeit detection
   useEffect(() => {
     const channel = supabase
       .channel(`game-players:${room.id}`)
@@ -145,12 +160,12 @@ export default function OnlineGameClient({ room, initialGameState, currentUserId
         (payload) => {
           const updated = payload.new as { player_id: string; status: string }
           if (updated.status !== 'forfeited') return
-          setGameState(prev => {
-            const newPlayers = prev.players.map(p =>
+          setGameState(prev => ({
+            ...prev,
+            players: prev.players.map(p =>
               p.playerId === updated.player_id ? { ...p, status: 'forfeited' as const } : p
-            )
-            return { ...prev, players: newPlayers }
-          })
+            ),
+          }))
         }
       )
       .subscribe()
@@ -161,33 +176,26 @@ export default function OnlineGameClient({ room, initialGameState, currentUserId
   useEffect(() => {
     if (isFinished) return
     setTurnTimer(30)
-
     if (timerRef.current) clearInterval(timerRef.current)
     timerRef.current = setInterval(() => {
       setTurnTimer(t => {
         if (t <= 1) {
           clearInterval(timerRef.current!)
-          // Auto-act on timeout — only the current player's client should do this
           if (isMyTurn) {
-            if (gameState.phase === 'roll') {
-              handleRoll()
-            } else {
-              handleSkip()
-            }
+            if (gameState.phase === 'roll') handleRoll()
+            else handleSkip()
           }
           return 30
         }
         return t - 1
       })
     }, 1000)
-
     return () => { if (timerRef.current) clearInterval(timerRef.current) }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gameState.currentPlayerOrder, gameState.phase, isFinished])
 
-  // AI turn handler (only run on the host client or whoever's client is controlling AI)
   const handleAiTurn = useCallback(() => {
     if (!currentPlayer?.isComputer || isFinished) return
-    // Let the host handle AI moves to avoid race conditions
     const isHost = room.game_players.find(p => !p.is_computer)?.player_id === currentUserId
     if (!isHost) return
 
@@ -234,6 +242,7 @@ export default function OnlineGameClient({ room, initialGameState, currentUserId
   async function handleRoll() {
     if (!isMyTurn || gameState.phase !== 'roll') return
     const value = rollDice()
+    earnCash(value * 100, `🎲 Dice ${value}!`)
     const rolledState = { ...gameState, diceValue: value, phase: 'move' as const }
     setGameState(rolledState)
     await persistState(rolledState)
@@ -262,9 +271,18 @@ export default function OnlineGameClient({ room, initialGameState, currentUserId
     if (!isMyTurn || gameState.phase !== 'move' || gameState.diceValue === null) return
     const result = applyMove(gameState.tokens, color, index, gameState.diceValue)
 
+    if (color === myColor) {
+      if (result.captured) earnCash(2000, '🎯 Capture!')
+      const newDone = countDoneTokens(result.tokens, myColor!)
+      const oldDone = countDoneTokens(gameState.tokens, myColor!)
+      if (newDone > oldDone) earnCash(5000 * (newDone - oldDone), '🏠 Token home!')
+    }
+
     const done = countDoneTokens(result.tokens, color)
     let newPlayers = gameState.players.map(p =>
-      p.color === color ? { ...p, tokensDone: done, capturesMade: result.captured ? p.capturesMade + 1 : p.capturesMade } : p
+      p.color === color
+        ? { ...p, tokensDone: done, capturesMade: result.captured ? p.capturesMade + 1 : p.capturesMade }
+        : p
     )
 
     const justFinished = done === 4
@@ -292,18 +310,19 @@ export default function OnlineGameClient({ room, initialGameState, currentUserId
   }
 
   if (isFinished) {
-    // For forfeit wins: active player = winner, forfeited players = last
     const activePlayers = gameState.players.filter(p => p.status === 'active')
     const anyRanked = gameState.players.some(p => p.rank != null)
 
     const displayOrder = anyRanked
       ? [...gameState.players].sort((a, b) => (a.rank ?? 99) - (b.rank ?? 99))
-      : [
-          ...activePlayers,
-          ...gameState.players.filter(p => p.status === 'forfeited'),
-        ]
+      : [...activePlayers, ...gameState.players.filter(p => p.status === 'forfeited')]
 
     const winner = displayOrder[0]
+    const myPlayer = gameState.players.find(p => p.color === myColor)
+    const myRank = anyRanked
+      ? (myPlayer?.rank ?? gameState.players.length)
+      : (myPlayer?.status === 'active' ? 1 : gameState.players.length)
+    const myReward = WIN_REWARDS[Math.min(myRank - 1, WIN_REWARDS.length - 1)]
 
     return (
       <div className="flex flex-col items-center justify-center flex-1 px-6 py-12 gap-6">
@@ -313,6 +332,12 @@ export default function OnlineGameClient({ room, initialGameState, currentUserId
           <p className="text-lg font-bold text-amber-700">
             {winner.color === myColor ? 'You win!' : `${winner.displayName} wins!`}
           </p>
+        )}
+        {myColor && (
+          <div className="bg-green-100 border border-green-300 rounded-2xl px-6 py-3 text-center">
+            <div className="text-green-700 font-black text-xl">+${myReward.toLocaleString()}</div>
+            <div className="text-green-600 text-xs">{RANK_LABELS[Math.min(myRank - 1, 3)]} Place Reward</div>
+          </div>
         )}
         <div className="w-full max-w-sm bg-white rounded-2xl shadow p-4">
           {displayOrder.map((p, i) => (
@@ -338,6 +363,13 @@ export default function OnlineGameClient({ room, initialGameState, currentUserId
 
   return (
     <div className="flex flex-col flex-1 items-center px-2 py-4 gap-4">
+      {/* Cash notification */}
+      {earnNotif && (
+        <div className="fixed top-20 right-3 z-50 bg-green-500 text-white font-black px-4 py-2 rounded-2xl shadow-lg text-sm animate-bounce">
+          {earnNotif}
+        </div>
+      )}
+
       <div className="flex items-center gap-3 px-4 py-2 rounded-full bg-white shadow">
         <span className={`w-4 h-4 rounded-full ${currentPlayer.color === 'red' ? 'bg-red-500' : currentPlayer.color === 'blue' ? 'bg-blue-500' : currentPlayer.color === 'green' ? 'bg-green-500' : 'bg-yellow-400'}`} />
         <span className="font-semibold text-amber-900 text-sm">
@@ -401,6 +433,8 @@ export default function OnlineGameClient({ room, initialGameState, currentUserId
       >
         Leave Game
       </button>
+
+      <MusicPlayer />
     </div>
   )
 }

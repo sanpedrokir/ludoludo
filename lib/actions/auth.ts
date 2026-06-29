@@ -12,12 +12,10 @@ export async function signUp(_prev: ActionResult, formData: FormData): Promise<A
   const email = formData.get('email') as string
   const password = formData.get('password') as string
   const displayName = formData.get('displayName') as string
-  const phone = formData.get('phone') as string
-
   const { error } = await supabase.auth.signUp({
     email,
     password,
-    options: { data: { display_name: displayName, phone } },
+    options: { data: { display_name: displayName } },
   })
 
   if (error) return { error: error.message }

@@ -1,9 +1,9 @@
 'use client'
 
-import { useEffect, useState, useActionState, useMemo } from 'react'
+import { useEffect, useState, useRef, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
-import { startGame, leaveRoom, sendInvitation } from '@/lib/actions/game'
+import { startGame, leaveRoom } from '@/lib/actions/game'
 import { Color } from '@/lib/game/types'
 
 const COLOR_CLASS: Record<Color, string> = {
@@ -44,10 +44,10 @@ export default function LobbyClient({ room, currentUserId, isHost, myDisplayName
   const supabase = useMemo(() => createClient(), [])
 
   const [players, setPlayers] = useState<Player[]>(room.game_players)
-  const [showInvite, setShowInvite] = useState(false)
-  const [phones, setPhones] = useState(['', '', ''])
-  const [inviteState, inviteAction, invitePending] = useActionState(sendInvitation, { error: undefined })
   const [starting, setStarting] = useState(false)
+  const [joinNotif, setJoinNotif] = useState<string | null>(null)
+  const [copied, setCopied] = useState(false)
+  const prevPlayerIdsRef = useRef(new Set(room.game_players.map(p => p.player_id)))
 
   useEffect(() => {
     const channel = supabase
@@ -56,21 +56,30 @@ export default function LobbyClient({ room, currentUserId, isHost, myDisplayName
         'postgres_changes',
         { event: '*', schema: 'public', table: 'game_players', filter: `room_id=eq.${room.id}` },
         () => {
-          // Refetch players on any change
           supabase
             .from('game_players')
             .select('*, profiles(display_name, avatar_id)')
             .eq('room_id', room.id)
-            .then(({ data }) => { if (data) setPlayers(data as Player[]) })
+            .then(({ data }) => {
+              if (!data) return
+              const newPlayer = data.find(
+                p => !p.is_computer && !prevPlayerIdsRef.current.has(p.player_id)
+              )
+              if (newPlayer) {
+                const name = newPlayer.profiles?.display_name ?? 'Someone'
+                setJoinNotif(`${name} has joined! 🎉`)
+                setTimeout(() => setJoinNotif(null), 4000)
+              }
+              prevPlayerIdsRef.current = new Set(data.map((p: Player) => p.player_id))
+              setPlayers(data as Player[])
+            })
         }
       )
       .on(
         'postgres_changes',
         { event: 'UPDATE', schema: 'public', table: 'game_rooms', filter: `id=eq.${room.id}` },
         (payload) => {
-          if (payload.new.status === 'playing') {
-            router.push(`/game/${room.id}`)
-          }
+          if (payload.new.status === 'playing') router.push(`/game/${room.id}`)
         }
       )
       .subscribe()
@@ -87,37 +96,66 @@ export default function LobbyClient({ room, currentUserId, isHost, myDisplayName
     }
   }
 
+  function handleShareWhatsApp() {
+    const joinUrl = `${window.location.origin}/join?code=${room.room_code}`
+    const text = encodeURIComponent(
+      `🎲 Join my LudoLudo game!\nCode: *${room.room_code}*\nClick to join: ${joinUrl}`
+    )
+    window.open(`https://wa.me/?text=${text}`, '_blank')
+  }
+
+  async function handleCopyLink() {
+    const joinUrl = `${window.location.origin}/join?code=${room.room_code}`
+    await navigator.clipboard.writeText(joinUrl)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2500)
+  }
+
   const humanPlayers = players.filter(p => !p.is_computer)
   const canStart = isHost && humanPlayers.length >= 2
 
-  const slots = Array.from({ length: room.max_players }, (_, i) => {
-    return players.find(p => !p.is_computer && p.profiles)
-      ? players.filter(p => !p.is_computer)[i] ?? null
-      : players[i] ?? null
-  })
-
   return (
-    <div className="px-6 py-8 flex flex-col gap-6 max-w-md mx-auto w-full">
-      <div className="flex items-start justify-between">
-        <div>
-          <h2 className="text-2xl font-black text-amber-900">{room.name ?? 'Game Lobby'}</h2>
-          <p className="text-amber-700 text-sm mt-1">
-            Code: <span className="font-mono font-black text-amber-900 text-lg tracking-widest">{room.room_code}</span>
-          </p>
+    <div className="px-5 py-6 flex flex-col gap-5 max-w-md mx-auto w-full">
+      {/* Join notification */}
+      {joinNotif && (
+        <div className="bg-green-100 border border-green-300 text-green-800 rounded-2xl p-3 text-sm font-semibold text-center animate-bounce">
+          {joinNotif}
         </div>
-        <button
-          onClick={() => navigator.clipboard.writeText(room.room_code)}
-          className="text-xs text-amber-500 hover:text-amber-700 border border-amber-200 rounded-lg px-2 py-1"
-        >
-          Copy code
-        </button>
+      )}
+
+      <div>
+        <h2 className="text-2xl font-black text-amber-900">{room.name ?? 'Game Lobby'}</h2>
+        <p className="text-amber-500 text-sm mt-0.5">
+          Code: <span className="font-mono font-black text-amber-900 text-xl tracking-widest">{room.room_code}</span>
+        </p>
+      </div>
+
+      {/* Share section */}
+      <div className="bg-white rounded-2xl p-4 shadow-sm border border-amber-100">
+        <div className="text-xs font-bold text-amber-700 uppercase tracking-wide mb-3">Invite Friends</div>
+        <div className="flex gap-2">
+          <button
+            onClick={handleShareWhatsApp}
+            className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl bg-green-500 text-white font-bold text-sm hover:bg-green-600 transition-colors"
+          >
+            <span className="text-lg">📱</span>
+            Share via WhatsApp
+          </button>
+          <button
+            onClick={handleCopyLink}
+            className="px-4 py-2.5 rounded-xl border-2 border-amber-200 text-amber-700 font-bold text-sm hover:bg-amber-50 transition-colors"
+          >
+            {copied ? '✓ Copied' : '🔗'}
+          </button>
+        </div>
+        <p className="text-xs text-amber-400 mt-2">Friends click the link → sign in → pick a colour → they appear here automatically</p>
       </div>
 
       {/* Player slots */}
       <div className="flex flex-col gap-2">
-        {players.slice(0, room.max_players).map((player, i) => (
+        {players.slice(0, room.max_players).map((player) => (
           <div key={player.id} className="flex items-center gap-3 bg-white rounded-xl p-3 shadow-sm">
-            <span className={`w-8 h-8 rounded-full ${COLOR_CLASS[player.color]} flex items-center justify-center text-white text-xs font-bold`}>
+            <span className={`w-9 h-9 rounded-full ${COLOR_CLASS[player.color]} flex items-center justify-center text-white text-sm font-bold`}>
               {player.is_computer ? '🤖' : player.profiles?.display_name?.[0]?.toUpperCase() ?? '?'}
             </span>
             <div className="flex-1">
@@ -125,82 +163,39 @@ export default function LobbyClient({ room, currentUserId, isHost, myDisplayName
                 {player.is_computer
                   ? 'Computer Player'
                   : player.profiles?.display_name ?? 'Unknown'}
-                {player.profiles && room.host_id === player.player_id && !player.is_computer && (
+                {!player.is_computer && player.player_id === room.host_id && (
                   <span className="ml-2 text-xs text-amber-500">(Host)</span>
                 )}
               </div>
-              <div className="text-xs text-amber-500 capitalize">{player.color}</div>
+              <div className="text-xs text-amber-400 capitalize">{player.color}</div>
             </div>
-            {player.status === 'active' && <span className="text-green-500 text-xs">●</span>}
+            <span className="text-green-500 text-sm">●</span>
           </div>
         ))}
         {Array.from({ length: Math.max(0, room.max_players - players.length) }).map((_, i) => (
           <div key={`empty-${i}`} className="flex items-center gap-3 bg-white/50 rounded-xl p-3 border-2 border-dashed border-amber-200">
-            <span className="w-8 h-8 rounded-full bg-amber-100 flex items-center justify-center text-amber-400 text-lg">?</span>
+            <span className="w-9 h-9 rounded-full bg-amber-100 flex items-center justify-center text-amber-400 text-lg">?</span>
             <span className="text-sm text-amber-400">Waiting for player…</span>
           </div>
         ))}
       </div>
 
-      {/* Invite section */}
-      {isHost && (
-        <div>
-          <button
-            onClick={() => setShowInvite(v => !v)}
-            className="text-sm text-blue-600 font-semibold hover:underline"
-          >
-            {showInvite ? '▲ Hide invite' : '▼ Invite friends by phone'}
-          </button>
-
-          {showInvite && (
-            <form action={inviteAction} className="mt-3 flex flex-col gap-3">
-              <input type="hidden" name="roomId" value={room.id} />
-              <input type="hidden" name="phones" value={phones.filter(Boolean).join(',')} />
-              {[0, 1, 2].map(i => (
-                <input
-                  key={i}
-                  type="tel"
-                  placeholder={`Friend ${i + 1} phone (+1234567890)`}
-                  value={phones[i]}
-                  onChange={e => {
-                    const updated = [...phones]
-                    updated[i] = e.target.value
-                    setPhones(updated)
-                  }}
-                  className="w-full px-3 py-2 rounded-xl border-2 border-amber-200 focus:border-amber-500 focus:outline-none bg-white text-sm text-amber-900"
-                />
-              ))}
-              {inviteState?.error && (
-                <p className="text-red-600 text-xs">{inviteState.error}</p>
-              )}
-              {inviteState?.success && (
-                <p className="text-green-600 text-xs">{inviteState.message}</p>
-              )}
-              <button
-                type="submit"
-                disabled={invitePending}
-                className="py-2 rounded-xl bg-blue-600 text-white font-bold text-sm hover:bg-blue-700 disabled:opacity-60 transition-colors"
-              >
-                {invitePending ? 'Sending…' : 'Send Invitations 📱'}
-              </button>
-            </form>
-          )}
-        </div>
-      )}
-
       {/* Actions */}
       <div className="flex flex-col gap-3">
-        {isHost && (
+        {isHost ? (
           <button
             onClick={handleStart}
             disabled={!canStart || starting}
             className="w-full py-4 rounded-2xl bg-amber-600 text-white font-black text-xl hover:bg-amber-700 disabled:opacity-50 transition-colors shadow-md"
           >
-            {starting ? 'Starting…' : canStart ? 'Start Game 🎲' : `Waiting for players (${humanPlayers.length}/${2} min)`}
+            {starting
+              ? 'Starting…'
+              : canStart
+                ? 'Start Game 🎲'
+                : `Waiting for players (${humanPlayers.length}/${2} min)`}
           </button>
-        )}
-        {!isHost && (
-          <div className="text-center text-amber-600 font-semibold animate-pulse">
+        ) : (
+          <div className="text-center text-amber-600 font-semibold animate-pulse py-3">
             Waiting for host to start the game…
           </div>
         )}
@@ -208,7 +203,7 @@ export default function LobbyClient({ room, currentUserId, isHost, myDisplayName
           onClick={async () => { await leaveRoom(room.id); router.push('/home') }}
           className="w-full py-3 rounded-2xl border-2 border-red-200 text-red-600 font-bold hover:bg-red-50 transition-colors"
         >
-          Leave Game
+          Leave Lobby
         </button>
       </div>
     </div>

@@ -1,9 +1,10 @@
 'use client'
 
-import { useEffect, useReducer, useCallback, useRef } from 'react'
+import { useEffect, useReducer, useCallback, useRef, useState } from 'react'
 import { useSearchParams, useRouter } from 'next/navigation'
 import LudoBoard from '@/components/board/LudoBoard'
 import BoardScaler from '@/components/board/BoardScaler'
+import MusicPlayer from '@/components/MusicPlayer'
 import {
   createLocalGameState,
   buildComputerGamePlayers,
@@ -16,6 +17,10 @@ import {
 } from '@/lib/game/engine'
 import { chooseComputerMove, rollDice } from '@/lib/game/ai'
 import { Color, Difficulty, GameState } from '@/lib/game/types'
+import { addBalance } from '@/lib/actions/economy'
+
+const WIN_REWARDS = [10000, 5000, 1000, 200]
+const RANK_LABELS = ['🥇 1st', '🥈 2nd', '🥉 3rd', '4th']
 
 type Action =
   | { type: 'ROLL'; value: number }
@@ -30,12 +35,7 @@ function gameReducer(state: GameState, action: Action): GameState {
   }
 
   if (action.type === 'SKIP_TURN') {
-    return {
-      ...state,
-      diceValue: null,
-      phase: 'roll',
-      currentPlayerOrder: nextPlayer(state),
-    }
+    return { ...state, diceValue: null, phase: 'roll', currentPlayerOrder: nextPlayer(state) }
   }
 
   if (action.type === 'MOVE' && state.diceValue !== null) {
@@ -43,12 +43,13 @@ function gameReducer(state: GameState, action: Action): GameState {
 
     let players = state.players.map(p => {
       if (p.color !== currentPlayer.color) return p
-      const captures = result.captured ? p.capturesMade + 1 : p.capturesMade
-      const done = countDoneTokens(result.tokens, p.color)
-      return { ...p, capturesMade: captures, tokensDone: done }
+      return {
+        ...p,
+        capturesMade: result.captured ? p.capturesMade + 1 : p.capturesMade,
+        tokensDone: countDoneTokens(result.tokens, p.color),
+      }
     })
 
-    // Check if this player just finished
     const justFinished = countDoneTokens(result.tokens, currentPlayer.color) === 4
     const nextRank = players.filter(p => p.rank != null).length + 1
     if (justFinished && currentPlayer.rank == null) {
@@ -65,7 +66,6 @@ function gameReducer(state: GameState, action: Action): GameState {
     }
 
     if (isGameFinished(newState)) {
-      // Assign last place
       const lastPlayer = newState.players.find(p => p.rank == null)
       const finalPlayers = lastPlayer
         ? assignRank(newState.players, lastPlayer.color, newState.players.length)
@@ -96,7 +96,10 @@ export default function LocalGamePage() {
     }
   )
 
+  const [earnNotif, setEarnNotif] = useState<string | null>(null)
   const aiTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const finishedHandledRef = useRef(false)
+
   const currentPlayer = state.players[state.currentPlayerOrder]
   const isMyTurn = currentPlayer?.color === myColor
   const isFinished = state.phase === 'finished'
@@ -105,14 +108,30 @@ export default function LocalGamePage() {
     ? getValidMoves(state.tokens, currentPlayer.color, state.diceValue)
     : []
 
-  // AI turn handler
+  function earnCash(amount: number, label: string) {
+    setEarnNotif(`+$${amount.toLocaleString()} ${label}`)
+    setTimeout(() => setEarnNotif(null), 2500)
+    addBalance(amount).catch(console.error)
+  }
+
+  // Win reward on game end
+  useEffect(() => {
+    if (!isFinished || finishedHandledRef.current) return
+    finishedHandledRef.current = true
+    const myPlayer = state.players.find(p => p.color === myColor)
+    if (!myPlayer) return
+    const rank = myPlayer.rank ?? state.players.length
+    const reward = WIN_REWARDS[Math.min(rank - 1, WIN_REWARDS.length - 1)]
+    earnCash(reward, RANK_LABELS[Math.min(rank - 1, 3)] + ' Place!')
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isFinished])
+
   const handleAiTurn = useCallback(() => {
     if (!currentPlayer?.isComputer || isFinished) return
 
     if (state.phase === 'roll') {
       aiTimerRef.current = setTimeout(() => {
-        const value = rollDice()
-        dispatch({ type: 'ROLL', value })
+        dispatch({ type: 'ROLL', value: rollDice() })
       }, 800)
     } else if (state.phase === 'move' && state.diceValue !== null) {
       aiTimerRef.current = setTimeout(() => {
@@ -121,11 +140,7 @@ export default function LocalGamePage() {
           dispatch({ type: 'SKIP_TURN' })
         } else {
           const chosen = chooseComputerMove(state.tokens, currentPlayer.color, state.diceValue!, currentPlayer.difficulty!)
-          if (chosen === -1) {
-            dispatch({ type: 'SKIP_TURN' })
-          } else {
-            dispatch({ type: 'MOVE', tokenIndex: chosen })
-          }
+          dispatch({ type: chosen === -1 ? 'SKIP_TURN' : 'MOVE', tokenIndex: chosen })
         }
       }, 700)
     }
@@ -134,14 +149,13 @@ export default function LocalGamePage() {
   useEffect(() => {
     if (aiTimerRef.current) clearTimeout(aiTimerRef.current)
     handleAiTurn()
-    return () => {
-      if (aiTimerRef.current) clearTimeout(aiTimerRef.current)
-    }
+    return () => { if (aiTimerRef.current) clearTimeout(aiTimerRef.current) }
   }, [handleAiTurn])
 
   function handleRoll() {
     if (!isMyTurn || state.phase !== 'roll' || isFinished) return
     const value = rollDice()
+    earnCash(value * 100, `🎲 Dice ${value}!`)
     dispatch({ type: 'ROLL', value })
     if (getValidMoves(state.tokens, myColor, value).length === 0) {
       setTimeout(() => dispatch({ type: 'SKIP_TURN' }), 500)
@@ -149,18 +163,31 @@ export default function LocalGamePage() {
   }
 
   function handleTokenClick(color: Color, index: number) {
-    if (!isMyTurn || state.phase !== 'move') return
+    if (!isMyTurn || state.phase !== 'move' || state.diceValue === null) return
+    if (color === myColor) {
+      const result = applyMove(state.tokens, color, index, state.diceValue)
+      if (result.captured) earnCash(2000, '🎯 Capture!')
+      const newDone = countDoneTokens(result.tokens, myColor)
+      const oldDone = countDoneTokens(state.tokens, myColor)
+      if (newDone > oldDone) earnCash(5000 * (newDone - oldDone), '🏠 Token home!')
+    }
     dispatch({ type: 'MOVE', tokenIndex: index })
   }
 
-  const COLOR_NAMES: Record<Color, string> = { red: 'Red', blue: 'Blue', green: 'Green', yellow: 'Yellow' }
-
   if (isFinished) {
     const sorted = [...state.players].sort((a, b) => (a.rank ?? 99) - (b.rank ?? 99))
+    const myPlayer = state.players.find(p => p.color === myColor)
+    const myRank = myPlayer?.rank ?? state.players.length
+    const myReward = WIN_REWARDS[Math.min(myRank - 1, WIN_REWARDS.length - 1)]
+
     return (
       <div className="flex flex-col items-center justify-center flex-1 px-6 py-12 gap-6">
         <div className="text-6xl">🏆</div>
         <h2 className="text-3xl font-black text-amber-900">Game Over!</h2>
+        <div className="bg-green-100 border border-green-300 rounded-2xl px-6 py-3 text-center">
+          <div className="text-green-700 font-black text-xl">+${myReward.toLocaleString()}</div>
+          <div className="text-green-600 text-xs">{RANK_LABELS[Math.min(myRank - 1, 3)]} Place Reward</div>
+        </div>
         <div className="w-full max-w-sm bg-white rounded-2xl shadow p-4">
           {sorted.map(p => (
             <div key={p.color} className="flex items-center gap-3 py-2 border-b border-amber-100 last:border-0">
@@ -193,20 +220,23 @@ export default function LocalGamePage() {
 
   return (
     <div className="flex flex-col flex-1 items-center px-2 py-4 gap-4">
-      {/* Player turn indicator */}
+      {/* Cash notification */}
+      {earnNotif && (
+        <div className="fixed top-20 right-3 z-50 bg-green-500 text-white font-black px-4 py-2 rounded-2xl shadow-lg text-sm animate-bounce">
+          {earnNotif}
+        </div>
+      )}
+
       <div className="flex items-center gap-2 px-4 py-2 rounded-full bg-white shadow">
         <span className={`w-4 h-4 rounded-full ${
           currentPlayer.color === 'red' ? 'bg-red-500' : currentPlayer.color === 'blue' ? 'bg-blue-500' : currentPlayer.color === 'green' ? 'bg-green-500' : 'bg-yellow-400'
         }`} />
         <span className="font-semibold text-amber-900 text-sm">
-          {isMyTurn ? "Your turn" : `${currentPlayer.displayName}'s turn`}
+          {isMyTurn ? 'Your turn' : `${currentPlayer.displayName}'s turn`}
         </span>
-        {currentPlayer.isComputer && (
-          <span className="text-xs text-amber-500">🤖</span>
-        )}
+        {currentPlayer.isComputer && <span className="text-xs text-amber-500">🤖</span>}
       </div>
 
-      {/* Board */}
       <BoardScaler>
         <LudoBoard
           tokens={state.tokens}
@@ -216,7 +246,6 @@ export default function LocalGamePage() {
         />
       </BoardScaler>
 
-      {/* Dice and controls */}
       <div className="flex items-center gap-6 bg-white rounded-2xl shadow px-6 py-4">
         {state.diceValue !== null && (
           <div className="flex flex-col items-center gap-1">
@@ -226,7 +255,6 @@ export default function LocalGamePage() {
             </div>
           </div>
         )}
-
         {isMyTurn && state.phase === 'roll' && (
           <button
             onClick={handleRoll}
@@ -235,7 +263,6 @@ export default function LocalGamePage() {
             Roll 🎲
           </button>
         )}
-
         {isMyTurn && state.phase === 'move' && validMoves.length === 0 && (
           <button
             onClick={() => dispatch({ type: 'SKIP_TURN' })}
@@ -244,13 +271,9 @@ export default function LocalGamePage() {
             Skip Turn
           </button>
         )}
-
-        {!isMyTurn && (
-          <span className="text-amber-500 text-sm animate-pulse">Waiting…</span>
-        )}
+        {!isMyTurn && <span className="text-amber-500 text-sm animate-pulse">Waiting…</span>}
       </div>
 
-      {/* Player list */}
       <div className="flex gap-2 flex-wrap justify-center">
         {state.players.map(p => (
           <div
@@ -275,6 +298,8 @@ export default function LocalGamePage() {
       >
         Leave game
       </button>
+
+      <MusicPlayer />
     </div>
   )
 }

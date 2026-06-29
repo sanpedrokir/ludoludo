@@ -57,12 +57,43 @@ export async function createGameRoom(_prev: ActionResult, formData: FormData): P
   redirect(`/lobby/${room.id}`)
 }
 
+export async function lookupRoom(code: string): Promise<
+  { available: Color[]; takenColors: Color[]; roomId: string } | { error: string }
+> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { error: 'Not authenticated' }
+
+  const { data: room, error } = await supabase
+    .from('game_rooms')
+    .select('*, game_players(*)')
+    .eq('room_code', code.trim().toUpperCase())
+    .single()
+
+  if (error || !room) return { error: 'Game room not found.' }
+  if (room.status === 'playing') return { error: 'This game has already started.' }
+  if (room.status === 'finished') return { error: 'This game has already ended.' }
+
+  const humanPlayers = room.game_players.filter((p: { is_computer: boolean }) => !p.is_computer)
+  const alreadyJoined = humanPlayers.some((p: { player_id: string }) => p.player_id === user.id)
+  if (alreadyJoined) redirect(`/lobby/${room.id}`)
+
+  if (humanPlayers.length >= room.max_players) return { error: 'This game room is full.' }
+
+  const takenColors = room.game_players.map((p: { color: string }) => p.color) as Color[]
+  const available = COLORS.filter(c => !takenColors.includes(c))
+  if (available.length === 0) return { error: 'No colour slots available.' }
+
+  return { available, takenColors, roomId: room.id }
+}
+
 export async function joinGameByCode(_prev: ActionResult, formData: FormData): Promise<ActionResult> {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { error: 'Not authenticated' }
 
-  const code = (formData.get('code') as string).trim()
+  const code = (formData.get('code') as string).trim().toUpperCase()
+  const chosenColor = formData.get('color') as Color | null
 
   const { data: room, error } = await supabase
     .from('game_rooms')
@@ -81,8 +112,12 @@ export async function joinGameByCode(_prev: ActionResult, formData: FormData): P
   if (alreadyJoined) redirect(`/lobby/${room.id}`)
 
   const takenColors = new Set(room.game_players.map((p: { color: string }) => p.color))
-  const availableColor = COLORS.find(c => !takenColors.has(c))
-  if (!availableColor) return { error: 'No colour slots available.' }
+  if (chosenColor && takenColors.has(chosenColor)) return { error: 'That colour was just taken. Please pick another.' }
+
+  const colorToUse = (chosenColor && !takenColors.has(chosenColor))
+    ? chosenColor
+    : COLORS.find(c => !takenColors.has(c))
+  if (!colorToUse) return { error: 'No colour slots available.' }
 
   const turnOrder = humanPlayers.length
 
@@ -91,7 +126,7 @@ export async function joinGameByCode(_prev: ActionResult, formData: FormData): P
     .insert({
       room_id: room.id,
       player_id: user.id,
-      color: availableColor,
+      color: colorToUse,
       is_computer: false,
       turn_order: turnOrder,
       status: 'active',
@@ -220,14 +255,18 @@ export async function leaveRoom(roomId: string): Promise<ActionResult> {
   return { success: true }
 }
 
-export async function recordOnlineGameResult(won: boolean): Promise<void> {
+const WIN_REWARDS = [10000, 5000, 1000, 200] as const
+
+export async function recordOnlineGameResult(rank: number): Promise<void> {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return
 
+  const reward = WIN_REWARDS[Math.min(rank - 1, WIN_REWARDS.length - 1)]
+
   const { data: current } = await supabase
     .from('profiles')
-    .select('games_played, wins')
+    .select('games_played, wins, balance')
     .eq('id', user.id)
     .single()
 
@@ -237,8 +276,9 @@ export async function recordOnlineGameResult(won: boolean): Promise<void> {
     .from('profiles')
     .update({
       games_played: (current.games_played ?? 0) + 1,
-      wins: (current.wins ?? 0) + (won ? 1 : 0),
-    })
+      wins: (current.wins ?? 0) + (rank === 1 ? 1 : 0),
+      balance: ((current as any).balance ?? 0) + reward,
+    } as any)
     .eq('id', user.id)
 }
 
