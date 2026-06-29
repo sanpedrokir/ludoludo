@@ -21,7 +21,15 @@ export default function BoardScaler({ children }: { children: React.ReactNode })
   }, [])
 
   return (
-    <div ref={wrapperRef} className="w-full" style={{ height: BOARD_SIZE * scale }}>
+    <div
+      ref={wrapperRef}
+      style={{
+        width: '100%',
+        maxWidth: BOARD_SIZE,
+        height: BOARD_SIZE * scale,
+        overflow: 'hidden',
+      }}
+    >
       <div
         style={{
           width: BOARD_SIZE,
