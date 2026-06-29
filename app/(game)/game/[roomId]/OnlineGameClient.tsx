@@ -8,7 +8,7 @@ import { createClient } from '@/lib/supabase/client'
 import { getValidMoves, applyMove, nextPlayer, isGameFinished, assignRank, countDoneTokens } from '@/lib/game/engine'
 import { chooseComputerMove, rollDice } from '@/lib/game/ai'
 import { Color, TokenState, GameState, PlayerState } from '@/lib/game/types'
-import { leaveRoom } from '@/lib/actions/game'
+import { leaveRoom, recordOnlineGameResult } from '@/lib/actions/game'
 
 interface DbGameState {
   id: string
@@ -77,6 +77,7 @@ export default function OnlineGameClient({ room, initialGameState, currentUserId
   const [turnTimer, setTurnTimer] = useState(30)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const aiTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const resultSubmittedRef = useRef(false)
 
   const currentPlayer = gameState.players[gameState.currentPlayerOrder]
   const isMyTurn = currentPlayer?.color === myColor && !currentPlayer.isComputer
@@ -99,6 +100,17 @@ export default function OnlineGameClient({ room, initialGameState, currentUserId
       })
       .eq('room_id', room.id)
   }
+
+  // Record this player's result once when the game ends
+  useEffect(() => {
+    if (!isFinished || resultSubmittedRef.current || !myColor) return
+    resultSubmittedRef.current = true
+    const myPlayer = gameState.players.find(p => p.color === myColor)
+    if (!myPlayer) return
+    const anyRanked = gameState.players.some(p => p.rank != null)
+    const won = anyRanked ? myPlayer.rank === 1 : myPlayer.status === 'active'
+    recordOnlineGameResult(won)
+  }, [isFinished])
 
   // Subscribe to realtime game state changes
   useEffect(() => {

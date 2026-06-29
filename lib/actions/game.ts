@@ -220,6 +220,28 @@ export async function leaveRoom(roomId: string): Promise<ActionResult> {
   return { success: true }
 }
 
+export async function recordOnlineGameResult(won: boolean): Promise<void> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return
+
+  const { data: current } = await supabase
+    .from('profiles')
+    .select('games_played, wins')
+    .eq('id', user.id)
+    .single()
+
+  if (!current) return
+
+  await supabase
+    .from('profiles')
+    .update({
+      games_played: (current.games_played ?? 0) + 1,
+      wins: (current.wins ?? 0) + (won ? 1 : 0),
+    })
+    .eq('id', user.id)
+}
+
 export async function sendInvitation(_prev: ActionResult, formData: FormData): Promise<ActionResult> {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()

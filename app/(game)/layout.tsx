@@ -32,16 +32,20 @@ export default async function GameLayout({ children }: { children: React.ReactNo
 
       <main className="flex-1 flex flex-col">{children}</main>
 
-      <nav className="bg-white border-t border-amber-200 flex justify-around py-2 px-4">
-        <Link href="/home" className="flex flex-col items-center gap-1 text-xs text-amber-700 hover:text-amber-900">
+      <nav className="bg-white border-t border-amber-200 flex justify-around py-2 px-2">
+        <Link href="/home" className="flex flex-col items-center gap-0.5 text-[11px] text-amber-700 hover:text-amber-900">
           <span className="text-xl">🏠</span>
           Home
         </Link>
-        <Link href="/history" className="flex flex-col items-center gap-1 text-xs text-amber-700 hover:text-amber-900">
+        <Link href="/leaderboard" className="flex flex-col items-center gap-0.5 text-[11px] text-amber-700 hover:text-amber-900">
+          <span className="text-xl">🏆</span>
+          Rankings
+        </Link>
+        <Link href="/history" className="flex flex-col items-center gap-0.5 text-[11px] text-amber-700 hover:text-amber-900">
           <span className="text-xl">📋</span>
           History
         </Link>
-        <Link href="/profile" className="flex flex-col items-center gap-1 text-xs text-amber-700 hover:text-amber-900">
+        <Link href="/profile" className="flex flex-col items-center gap-0.5 text-[11px] text-amber-700 hover:text-amber-900">
           <span className="text-xl">👤</span>
           Profile
         </Link>
