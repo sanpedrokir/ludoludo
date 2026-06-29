@@ -4,7 +4,6 @@ import { useEffect, useReducer, useCallback, useRef, useState } from 'react'
 import { useSearchParams, useRouter } from 'next/navigation'
 import LudoBoard from '@/components/board/LudoBoard'
 import BoardScaler from '@/components/board/BoardScaler'
-import MusicPlayer from '@/components/MusicPlayer'
 import {
   createLocalGameState,
   buildComputerGamePlayers,
@@ -299,7 +298,6 @@ export default function LocalGamePage() {
         Leave game
       </button>
 
-      <MusicPlayer />
     </div>
   )
 }

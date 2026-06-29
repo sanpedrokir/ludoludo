@@ -4,7 +4,6 @@ import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import LudoBoard from '@/components/board/LudoBoard'
 import BoardScaler from '@/components/board/BoardScaler'
-import MusicPlayer from '@/components/MusicPlayer'
 import { createClient } from '@/lib/supabase/client'
 import { getValidMoves, applyMove, nextPlayer, isGameFinished, assignRank, countDoneTokens } from '@/lib/game/engine'
 import { chooseComputerMove, rollDice } from '@/lib/game/ai'
@@ -434,7 +433,6 @@ export default function OnlineGameClient({ room, initialGameState, currentUserId
         Leave Game
       </button>
 
-      <MusicPlayer />
     </div>
   )
 }
