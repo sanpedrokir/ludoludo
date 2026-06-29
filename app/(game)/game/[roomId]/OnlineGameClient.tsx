@@ -7,6 +7,7 @@ import { createClient } from '@/lib/supabase/client'
 import { getValidMoves, applyMove, nextPlayer, isGameFinished, assignRank, countDoneTokens } from '@/lib/game/engine'
 import { chooseComputerMove, rollDice } from '@/lib/game/ai'
 import { Color, TokenState, GameState, PlayerState } from '@/lib/game/types'
+import { leaveRoom } from '@/lib/actions/game'
 
 interface DbGameState {
   id: string
@@ -121,6 +122,28 @@ export default function OnlineGameClient({ room, initialGameState, currentUserId
     return () => { supabase.removeChannel(channel) }
   }, [room.id, supabase])
 
+  // Subscribe to player forfeit events
+  useEffect(() => {
+    const channel = supabase
+      .channel(`game-players:${room.id}`)
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'game_players', filter: `room_id=eq.${room.id}` },
+        (payload) => {
+          const updated = payload.new as { player_id: string; status: string }
+          if (updated.status !== 'forfeited') return
+          setGameState(prev => {
+            const newPlayers = prev.players.map(p =>
+              p.playerId === updated.player_id ? { ...p, status: 'forfeited' as const } : p
+            )
+            return { ...prev, players: newPlayers }
+          })
+        }
+      )
+      .subscribe()
+    return () => { supabase.removeChannel(channel) }
+  }, [room.id, supabase])
+
   // Turn timer
   useEffect(() => {
     if (isFinished) return
@@ -216,6 +239,12 @@ export default function OnlineGameClient({ room, initialGameState, currentUserId
     await persistState(newState)
   }
 
+  async function handleLeaveGame() {
+    if (!confirm('Leave game? If fewer than 2 players remain, the game will end.')) return
+    await leaveRoom(room.id)
+    router.push('/home')
+  }
+
   async function handleTokenClick(color: Color, index: number) {
     if (!isMyTurn || gameState.phase !== 'move' || gameState.diceValue === null) return
     const result = applyMove(gameState.tokens, color, index, gameState.diceValue)
@@ -250,18 +279,40 @@ export default function OnlineGameClient({ room, initialGameState, currentUserId
   }
 
   if (isFinished) {
-    const sorted = [...gameState.players].sort((a, b) => (a.rank ?? 99) - (b.rank ?? 99))
+    // For forfeit wins: active player = winner, forfeited players = last
+    const activePlayers = gameState.players.filter(p => p.status === 'active')
+    const anyRanked = gameState.players.some(p => p.rank != null)
+
+    const displayOrder = anyRanked
+      ? [...gameState.players].sort((a, b) => (a.rank ?? 99) - (b.rank ?? 99))
+      : [
+          ...activePlayers,
+          ...gameState.players.filter(p => p.status === 'forfeited'),
+        ]
+
+    const winner = displayOrder[0]
+
     return (
       <div className="flex flex-col items-center justify-center flex-1 px-6 py-12 gap-6">
         <div className="text-6xl">🏆</div>
         <h2 className="text-3xl font-black text-amber-900">Game Over!</h2>
+        {winner && (
+          <p className="text-lg font-bold text-amber-700">
+            {winner.color === myColor ? 'You win!' : `${winner.displayName} wins!`}
+          </p>
+        )}
         <div className="w-full max-w-sm bg-white rounded-2xl shadow p-4">
-          {sorted.map(p => (
+          {displayOrder.map((p, i) => (
             <div key={p.color} className="flex items-center gap-3 py-2 border-b border-amber-100 last:border-0">
-              <span className="text-xl font-black text-amber-600">{p.rank ?? '-'}</span>
+              <span className="text-xl font-black text-amber-600">
+                {p.rank ?? (anyRanked ? '-' : i + 1)}
+              </span>
               <span className={`w-4 h-4 rounded-full ${p.color === 'red' ? 'bg-red-500' : p.color === 'blue' ? 'bg-blue-500' : p.color === 'green' ? 'bg-green-500' : 'bg-yellow-400'}`} />
               <span className="font-semibold text-amber-900 flex-1">{p.displayName}</span>
-              <span className="text-xs text-amber-500">{p.capturesMade} captures</span>
+              {p.status === 'forfeited'
+                ? <span className="text-xs text-red-400">Left game</span>
+                : <span className="text-xs text-amber-500">{p.capturesMade} captures</span>
+              }
             </div>
           ))}
         </div>
@@ -325,11 +376,18 @@ export default function OnlineGameClient({ room, initialGameState, currentUserId
 
       <div className="flex gap-2 flex-wrap justify-center">
         {gameState.players.map(p => (
-          <div key={p.color} className={`px-3 py-1 rounded-full text-xs font-semibold border-2 ${p.color === currentPlayer.color ? 'border-amber-600' : 'border-transparent'} ${p.color === 'red' ? 'bg-red-100 text-red-800' : p.color === 'blue' ? 'bg-blue-100 text-blue-800' : p.color === 'green' ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'}`}>
-            {p.displayName} {p.isComputer ? '🤖' : '👤'} {p.tokensDone}/4
+          <div key={p.color} className={`px-3 py-1 rounded-full text-xs font-semibold border-2 ${p.color === currentPlayer.color ? 'border-amber-600' : 'border-transparent'} ${p.status === 'forfeited' ? 'opacity-40 line-through' : ''} ${p.color === 'red' ? 'bg-red-100 text-red-800' : p.color === 'blue' ? 'bg-blue-100 text-blue-800' : p.color === 'green' ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'}`}>
+            {p.displayName} {p.isComputer ? '🤖' : '👤'} {p.tokensDone}/4{p.status === 'forfeited' ? ' (left)' : ''}
           </div>
         ))}
       </div>
+
+      <button
+        onClick={handleLeaveGame}
+        className="text-xs text-red-400 hover:text-red-600 underline transition-colors"
+      >
+        Leave Game
+      </button>
     </div>
   )
 }

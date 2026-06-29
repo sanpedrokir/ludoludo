@@ -150,11 +150,72 @@ export async function leaveRoom(roomId: string): Promise<ActionResult> {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { error: 'Not authenticated' }
 
+  // Get leaving player's turn_order before marking forfeited
+  const { data: myPlayer } = await supabase
+    .from('game_players')
+    .select('color, turn_order')
+    .eq('room_id', roomId)
+    .eq('player_id', user.id)
+    .single()
+
   await supabase
     .from('game_players')
     .update({ status: 'forfeited' })
     .eq('room_id', roomId)
     .eq('player_id', user.id)
+
+  const { data: room } = await supabase
+    .from('game_rooms')
+    .select('status')
+    .eq('id', roomId)
+    .single()
+
+  if (room?.status === 'playing') {
+    const { data: allPlayers } = await supabase
+      .from('game_players')
+      .select('player_id, turn_order, status, is_computer')
+      .eq('room_id', roomId)
+      .order('turn_order')
+
+    const { data: gameState } = await supabase
+      .from('game_states')
+      .select('current_player_order, phase')
+      .eq('room_id', roomId)
+      .single()
+
+    if (allPlayers && gameState) {
+      // Active = not this player and either computer or still active human
+      const remaining = allPlayers.filter(p =>
+        p.player_id !== user.id && (p.is_computer || p.status === 'active')
+      )
+
+      if (remaining.length <= 1) {
+        // End the game — only 0 or 1 player(s) left
+        await supabase
+          .from('game_rooms')
+          .update({ status: 'finished', finished_at: new Date().toISOString() })
+          .eq('id', roomId)
+        await supabase
+          .from('game_states')
+          .update({ phase: 'finished', updated_at: new Date().toISOString() })
+          .eq('room_id', roomId)
+      } else if (myPlayer && gameState.current_player_order === myPlayer.turn_order) {
+        // It was this player's turn — advance to next active player
+        const count = allPlayers.length
+        let next = (myPlayer.turn_order + 1) % count
+        for (let i = 0; i < count; i++) {
+          const candidate = allPlayers.find(p => p.turn_order === next)
+          if (candidate && candidate.player_id !== user.id &&
+              (candidate.is_computer || candidate.status === 'active')) break
+          next = (next + 1) % count
+        }
+        await supabase
+          .from('game_states')
+          .update({ current_player_order: next, dice_value: null, phase: 'roll', updated_at: new Date().toISOString() })
+          .eq('room_id', roomId)
+      }
+    }
+  }
 
   return { success: true }
 }

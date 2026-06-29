@@ -69,18 +69,6 @@ export default function CreateRoomPage() {
           </div>
         </div>
 
-        <label className="flex items-center gap-3 cursor-pointer">
-          <input
-            type="checkbox"
-            name="fillWithComputers"
-            value="true"
-            className="w-5 h-5 rounded border-amber-300 text-amber-600"
-          />
-          <span className="text-sm text-amber-800 font-medium">
-            Fill empty slots with AI after game starts
-          </span>
-        </label>
-
         <button
           type="submit"
           disabled={pending}
