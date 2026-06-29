@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import LudoBoard from '@/components/board/LudoBoard'
+import BoardScaler from '@/components/board/BoardScaler'
 import { createClient } from '@/lib/supabase/client'
 import { getValidMoves, applyMove, nextPlayer, isGameFinished, assignRank, countDoneTokens } from '@/lib/game/engine'
 import { chooseComputerMove, rollDice } from '@/lib/game/ai'
@@ -335,14 +336,14 @@ export default function OnlineGameClient({ room, initialGameState, currentUserId
         </span>
       </div>
 
-      <div className="overflow-auto w-full flex justify-center">
+      <BoardScaler>
         <LudoBoard
           tokens={gameState.tokens}
           currentColor={currentPlayer.color}
           validMoves={isMyTurn ? validMoves : []}
           onTokenClick={handleTokenClick}
         />
-      </div>
+      </BoardScaler>
 
       <div className="flex items-center gap-6 bg-white rounded-2xl shadow px-6 py-4">
         {gameState.diceValue !== null && (

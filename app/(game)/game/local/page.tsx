@@ -3,6 +3,7 @@
 import { useEffect, useReducer, useCallback, useRef } from 'react'
 import { useSearchParams, useRouter } from 'next/navigation'
 import LudoBoard from '@/components/board/LudoBoard'
+import BoardScaler from '@/components/board/BoardScaler'
 import {
   createLocalGameState,
   buildComputerGamePlayers,
@@ -206,20 +207,23 @@ export default function LocalGamePage() {
       </div>
 
       {/* Board */}
-      <div className="overflow-auto w-full flex justify-center">
+      <BoardScaler>
         <LudoBoard
           tokens={state.tokens}
           currentColor={currentPlayer.color}
           validMoves={isMyTurn ? validMoves : []}
           onTokenClick={handleTokenClick}
         />
-      </div>
+      </BoardScaler>
 
       {/* Dice and controls */}
       <div className="flex items-center gap-6 bg-white rounded-2xl shadow px-6 py-4">
         {state.diceValue !== null && (
-          <div className="text-5xl select-none">
-            {['', '⚀', '⚁', '⚂', '⚃', '⚄', '⚅'][state.diceValue]}
+          <div className="flex flex-col items-center gap-1">
+            <span className="text-xs text-amber-500 font-semibold">Rolled</span>
+            <div className="w-14 h-14 rounded-xl bg-amber-600 text-white flex items-center justify-center text-3xl font-black shadow">
+              {state.diceValue}
+            </div>
           </div>
         )}
 
