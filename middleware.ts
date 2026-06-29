@@ -25,9 +25,10 @@ export async function middleware(request: NextRequest) {
 
   const { data: { user } } = await supabase.auth.getUser()
 
-  const { pathname } = request.nextUrl
+  const { pathname, search } = request.nextUrl
   const isAuthRoute = pathname.startsWith('/signup') || pathname.startsWith('/signin')
-  const isGameRoute = pathname.startsWith('/home') ||
+  const isGameRoute =
+    pathname.startsWith('/home') ||
     pathname.startsWith('/play-computer') ||
     pathname.startsWith('/create-room') ||
     pathname.startsWith('/join') ||
@@ -35,10 +36,16 @@ export async function middleware(request: NextRequest) {
     pathname.startsWith('/game') ||
     pathname.startsWith('/results') ||
     pathname.startsWith('/history') ||
-    pathname.startsWith('/profile')
+    pathname.startsWith('/profile') ||
+    pathname.startsWith('/shop') ||
+    pathname.startsWith('/collection') ||
+    pathname.startsWith('/leaderboard')
 
   if (!user && isGameRoute) {
-    return NextResponse.redirect(new URL('/signin', request.url))
+    // Preserve the full path+query so we can redirect back after login
+    const signinUrl = new URL('/signin', request.url)
+    signinUrl.searchParams.set('next', pathname + search)
+    return NextResponse.redirect(signinUrl)
   }
 
   if (user && isAuthRoute) {

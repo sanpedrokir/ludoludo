@@ -1,10 +1,14 @@
 'use client'
 
 import { useState, useActionState } from 'react'
+import { useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { signInWithPassword } from '@/lib/actions/auth'
 
 export default function SignInPage() {
+  const searchParams = useSearchParams()
+  const next = searchParams.get('next') ?? ''
+
   const [showPassword, setShowPassword] = useState(false)
   const [state, formAction, pending] = useActionState(signInWithPassword, { error: undefined })
 
@@ -20,6 +24,7 @@ export default function SignInPage() {
       )}
 
       <form action={formAction} className="flex flex-col gap-4">
+        {next && <input type="hidden" name="next" value={next} />}
         <input
           name="email"
           type="email"
@@ -54,7 +59,10 @@ export default function SignInPage() {
 
       <p className="text-center text-amber-700 mt-6">
         New to LudoLudo?{' '}
-        <Link href="/signup" className="font-bold text-amber-900 underline">
+        <Link
+          href={next ? `/signup?next=${encodeURIComponent(next)}` : '/signup'}
+          className="font-bold text-amber-900 underline"
+        >
           Create account
         </Link>
       </p>

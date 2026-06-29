@@ -6,12 +6,19 @@ import { createClient } from '@/lib/supabase/server'
 
 type ActionResult = { error?: string; success?: boolean; message?: string }
 
+function safeNext(next: FormDataEntryValue | null): string {
+  const s = typeof next === 'string' ? next : ''
+  return s.startsWith('/') ? s : '/home'
+}
+
 export async function signUp(_prev: ActionResult, formData: FormData): Promise<ActionResult> {
   const supabase = await createClient()
 
   const email = formData.get('email') as string
   const password = formData.get('password') as string
   const displayName = formData.get('displayName') as string
+  const next = safeNext(formData.get('next'))
+
   const { error } = await supabase.auth.signUp({
     email,
     password,
@@ -21,7 +28,7 @@ export async function signUp(_prev: ActionResult, formData: FormData): Promise<A
   if (error) return { error: error.message }
 
   revalidatePath('/', 'layout')
-  redirect('/home')
+  redirect(next)
 }
 
 export async function signInWithPassword(_prev: ActionResult, formData: FormData): Promise<ActionResult> {
@@ -29,44 +36,14 @@ export async function signInWithPassword(_prev: ActionResult, formData: FormData
 
   const email = formData.get('email') as string
   const password = formData.get('password') as string
+  const next = safeNext(formData.get('next'))
 
   const { error } = await supabase.auth.signInWithPassword({ email, password })
 
   if (error) return { error: error.message }
 
   revalidatePath('/', 'layout')
-  redirect('/home')
-}
-
-export async function signInWithOtp(
-  _prev: ActionResult,
-  formData: FormData
-): Promise<ActionResult> {
-  const supabase = await createClient()
-  const email = formData.get('email') as string
-
-  const { error } = await supabase.auth.signInWithOtp({
-    email,
-    options: { shouldCreateUser: false },
-  })
-
-  if (error) return { error: error.message }
-
-  return { success: true, message: 'Check your email for the login link.' }
-}
-
-export async function verifyOtp(_prev: ActionResult, formData: FormData): Promise<ActionResult> {
-  const supabase = await createClient()
-
-  const email = formData.get('email') as string
-  const token = formData.get('token') as string
-
-  const { error } = await supabase.auth.verifyOtp({ email, token, type: 'email' })
-
-  if (error) return { error: error.message }
-
-  revalidatePath('/', 'layout')
-  redirect('/home')
+  redirect(next)
 }
 
 export async function signOut() {
