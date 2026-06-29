@@ -37,9 +37,9 @@ const HOME_TOKEN_POSITIONS: Record<Color, [number, number][]> = {
 
 // Token home circle positions for rendering empty slots
 const HOME_CIRCLES: Record<string, Color> = {}
-for (const [color, positions] of Object.entries(HOME_TOKEN_POSITIONS) as [Color, [number, number][][]]) {
-  for (const [r, c] of positions as [number, number][]) {
-    HOME_CIRCLES[`${r},${c}`] = color as Color
+for (const color of Object.keys(HOME_TOKEN_POSITIONS) as Color[]) {
+  for (const [r, c] of HOME_TOKEN_POSITIONS[color]) {
+    HOME_CIRCLES[`${r},${c}`] = color
   }
 }
 
