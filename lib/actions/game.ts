@@ -13,6 +13,8 @@ type ActionResult = {
   warning?: string
 }
 
+const STAKE_AMOUNT = 250_000
+
 export async function createGameRoom(_prev: ActionResult, formData: FormData): Promise<ActionResult> {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
@@ -22,6 +24,15 @@ export async function createGameRoom(_prev: ActionResult, formData: FormData): P
   const name = (formData.get('name') as string) || null
   const fillWithComputers = formData.get('fillWithComputers') === 'true'
   const hostColor = (formData.get('hostColor') as Color) || 'red'
+  const isStakeGame = formData.get('isStakeGame') === 'true'
+
+  if (isStakeGame) {
+    const { data: profile } = await supabase.from('profiles').select('balance').eq('id', user.id).single()
+    const balance = (profile as any)?.balance ?? 0
+    if (balance < STAKE_AMOUNT) {
+      return { error: `You need $${STAKE_AMOUNT.toLocaleString()} to create a stake game. Your balance: $${balance.toLocaleString()}` }
+    }
+  }
 
   const roomCode = generateRoomCode()
 
@@ -35,6 +46,7 @@ export async function createGameRoom(_prev: ActionResult, formData: FormData): P
       fill_with_computers: fillWithComputers,
       mode: 'online',
       status: 'waiting',
+      stake: isStakeGame ? STAKE_AMOUNT : 0,
     })
     .select()
     .single()
@@ -54,11 +66,17 @@ export async function createGameRoom(_prev: ActionResult, formData: FormData): P
 
   if (playerError) return { error: playerError.message }
 
+  // Deduct stake from host after room + player created
+  if (isStakeGame) {
+    const { data: profile } = await supabase.from('profiles').select('balance').eq('id', user.id).single()
+    await supabase.from('profiles').update({ balance: ((profile as any)?.balance ?? 0) - STAKE_AMOUNT } as any).eq('id', user.id)
+  }
+
   redirect(`/lobby/${room.id}`)
 }
 
 export async function lookupRoom(code: string): Promise<
-  { available: Color[]; takenColors: Color[]; roomId: string } | { error: string }
+  { available: Color[]; takenColors: Color[]; roomId: string; stake: number } | { error: string }
 > {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
@@ -84,7 +102,7 @@ export async function lookupRoom(code: string): Promise<
   const available = COLORS.filter(c => !takenColors.includes(c))
   if (available.length === 0) return { error: 'No colour slots available.' }
 
-  return { available, takenColors, roomId: room.id }
+  return { available, takenColors, roomId: room.id, stake: (room as any).stake ?? 0 }
 }
 
 export async function joinGameByCode(_prev: ActionResult, formData: FormData): Promise<ActionResult> {
@@ -119,7 +137,19 @@ export async function joinGameByCode(_prev: ActionResult, formData: FormData): P
     : COLORS.find(c => !takenColors.has(c))
   if (!colorToUse) return { error: 'No colour slots available.' }
 
-  const turnOrder = humanPlayers.length
+  const stakeAmount = (room as any).stake ?? 0
+  if (stakeAmount > 0) {
+    const { data: profile } = await supabase.from('profiles').select('balance').eq('id', user.id).single()
+    const balance = (profile as any)?.balance ?? 0
+    if (balance < stakeAmount) {
+      return { error: `This is a stake game. Entry fee: $${stakeAmount.toLocaleString()}. Your balance: $${balance.toLocaleString()}` }
+    }
+  }
+
+  const maxTurnOrder = room.game_players.reduce(
+    (max: number, p: { turn_order: number }) => Math.max(max, p.turn_order), -1
+  )
+  const turnOrder = maxTurnOrder + 1
 
   const { error: joinError } = await supabase
     .from('game_players')
@@ -133,6 +163,12 @@ export async function joinGameByCode(_prev: ActionResult, formData: FormData): P
     })
 
   if (joinError) return { error: joinError.message }
+
+  // Deduct stake after successful join
+  if (stakeAmount > 0) {
+    const { data: profile } = await supabase.from('profiles').select('balance').eq('id', user.id).single()
+    await supabase.from('profiles').update({ balance: ((profile as any)?.balance ?? 0) - stakeAmount } as any).eq('id', user.id)
+  }
 
   redirect(`/lobby/${room.id}`)
 }
@@ -193,11 +229,16 @@ export async function leaveRoom(roomId: string): Promise<ActionResult> {
     .eq('player_id', user.id)
     .single()
 
-  await supabase
+  const { error: forfeitError } = await supabase
     .from('game_players')
     .update({ status: 'forfeited' })
     .eq('room_id', roomId)
     .eq('player_id', user.id)
+
+  if (forfeitError) {
+    console.error('[leaveRoom] failed to set forfeited status:', forfeitError.message)
+    return { error: 'Could not leave game. Please run the RLS fix in Supabase: ALTER POLICY or add UPDATE policy for game_players.' }
+  }
 
   const { data: room } = await supabase
     .from('game_rooms')
@@ -257,12 +298,35 @@ export async function leaveRoom(roomId: string): Promise<ActionResult> {
 
 const WIN_REWARDS = [10000, 5000, 1000, 200] as const
 
-export async function recordOnlineGameResult(rank: number): Promise<void> {
+export async function recordOnlineGameResult(rank: number, roomId: string): Promise<void> {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return
 
+  // Idempotency: skip if already recorded for this room
+  const { data: existing } = await supabase
+    .from('game_history')
+    .select('id')
+    .eq('room_id', roomId)
+    .eq('player_id', user.id)
+    .maybeSingle()
+  if (existing) return
+
+  // Compute pot payout for winner
+  let potPayout = 0
+  const { data: roomData } = await supabase.from('game_rooms').select('stake').eq('id', roomId).single()
+  const stake = (roomData as any)?.stake ?? 0
+  if (rank === 1 && stake > 0) {
+    const { count } = await supabase
+      .from('game_players')
+      .select('*', { count: 'exact', head: true })
+      .eq('room_id', roomId)
+      .eq('is_computer', false)
+    potPayout = stake * (count ?? 0)
+  }
+
   const reward = WIN_REWARDS[Math.min(rank - 1, WIN_REWARDS.length - 1)]
+  const totalReward = reward + potPayout
 
   const { data: current } = await supabase
     .from('profiles')
@@ -277,9 +341,17 @@ export async function recordOnlineGameResult(rank: number): Promise<void> {
     .update({
       games_played: (current.games_played ?? 0) + 1,
       wins: (current.wins ?? 0) + (rank === 1 ? 1 : 0),
-      balance: ((current as any).balance ?? 0) + reward,
+      balance: ((current as any).balance ?? 0) + totalReward,
     } as any)
     .eq('id', user.id)
+
+  // Record history for idempotency
+  await supabase.from('game_history').insert({
+    room_id: roomId,
+    player_id: user.id,
+    rank,
+    mode: 'online',
+  })
 }
 
 export async function sendInvitation(_prev: ActionResult, formData: FormData): Promise<ActionResult> {
