@@ -18,17 +18,6 @@ export default async function HomePage() {
   const today = new Date().toISOString().split('T')[0]
   const canClaim = (profile as any)?.last_daily_reward !== today
 
-  // Find any in-progress game the user is currently a player in
-  const { data: playerRooms } = user
-    ? await supabase.from('game_players').select('room_id').eq('player_id', user.id).eq('is_computer', false).eq('status', 'active')
-    : { data: null }
-
-  const roomIds = (playerRooms ?? []).map((p: { room_id: string }) => p.room_id)
-
-  const { data: activeGame } = roomIds.length > 0
-    ? await supabase.from('game_rooms').select('id, name').eq('status', 'playing').in('id', roomIds).limit(1).maybeSingle()
-    : { data: null }
-
   const avatarId: number = (profile as any)?.avatar_id ?? 1
 
   return (
@@ -48,19 +37,6 @@ export default async function HomePage() {
       {/* Balance + daily reward (client section for immediate updates + sound) */}
       {profile && user && (
         <HomeClientSection userId={user.id} initialBalance={balance} canClaim={canClaim} />
-      )}
-
-      {/* Rejoin in-progress game */}
-      {activeGame && (
-        <Link
-          href={`/game/${activeGame.id}`}
-          className="flex items-center gap-3 px-4 py-2.5 rounded-xl text-white shadow-md"
-          style={{ background: '#164e63', border: '1px solid #22d3ee' }}
-        >
-          <span className="text-base">▶️</span>
-          <span className="text-sm font-bold flex-1">Game in progress — tap to rejoin</span>
-          <span className="text-[10px] bg-white/20 px-2 py-0.5 rounded-full font-black tracking-wide">LIVE</span>
-        </Link>
       )}
 
       {/* Game options */}
