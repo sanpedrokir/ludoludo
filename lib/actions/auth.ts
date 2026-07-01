@@ -56,6 +56,46 @@ export async function signInWithPassword(_prev: ActionResult, formData: FormData
 
 export async function signOut() {
   const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+
+  if (user) {
+    // Forfeit any active game_players rows for this user
+    await supabase
+      .from('game_players')
+      .update({ status: 'forfeited' })
+      .eq('player_id', user.id)
+      .eq('status', 'active')
+
+    // End any playing game rooms where this user is now the only/last active human
+    const { data: myRooms } = await supabase
+      .from('game_players')
+      .select('room_id')
+      .eq('player_id', user.id)
+
+    const roomIds = (myRooms ?? []).map((r: { room_id: string }) => r.room_id)
+    if (roomIds.length > 0) {
+      // For each playing room, check if any other human is still active
+      const { data: otherActive } = await supabase
+        .from('game_players')
+        .select('room_id')
+        .in('room_id', roomIds)
+        .neq('player_id', user.id)
+        .eq('is_computer', false)
+        .eq('status', 'active')
+
+      const roomsWithOthers = new Set((otherActive ?? []).map((r: { room_id: string }) => r.room_id))
+      const roomsToEnd = roomIds.filter((id: string) => !roomsWithOthers.has(id))
+
+      if (roomsToEnd.length > 0) {
+        await supabase
+          .from('game_rooms')
+          .update({ status: 'finished', finished_at: new Date().toISOString() })
+          .in('id', roomsToEnd)
+          .eq('status', 'playing')
+      }
+    }
+  }
+
   await supabase.auth.signOut()
   revalidatePath('/', 'layout')
   redirect('/')
