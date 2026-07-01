@@ -122,14 +122,6 @@ export default async function HomePage() {
               <div className="text-xs text-amber-500">Win Rate</div>
             </div>
           </div>
-          <div className="flex gap-2 mt-3 pt-3 border-t border-amber-100">
-            <Link href="/leaderboard" className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl bg-amber-50 text-amber-700 text-xs font-bold hover:bg-amber-100 transition-colors">
-              🏆 Rankings
-            </Link>
-            <Link href="/leaderboard?tab=rich" className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl bg-green-50 text-green-700 text-xs font-bold hover:bg-green-100 transition-colors">
-              💰 Rich List
-            </Link>
-          </div>
         </div>
       )}
     </div>

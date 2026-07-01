@@ -73,10 +73,6 @@ export default async function GameLayout({ children }: { children: React.ReactNo
           <span className="text-xl">🏠</span>
           Home
         </Link>
-        <Link href="/leaderboard" className="flex flex-col items-center gap-0.5 text-[11px] text-amber-700 hover:text-amber-900">
-          <span className="text-xl">🏆</span>
-          Rankings
-        </Link>
         <Link href="/shop" className="flex flex-col items-center gap-0.5 text-[11px] text-amber-700 hover:text-amber-900">
           <span className="text-xl">🛍️</span>
           Shop
