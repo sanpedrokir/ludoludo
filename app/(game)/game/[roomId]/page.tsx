@@ -11,7 +11,7 @@ export default async function OnlineGamePage({ params }: { params: Promise<{ roo
 
   const { data: room } = await supabase
     .from('game_rooms')
-    .select('*, game_players(*, profiles(display_name))')
+    .select('*, game_players(*, profiles(display_name, avatar_id))')
     .eq('id', roomId)
     .single()
 
@@ -23,6 +23,9 @@ export default async function OnlineGamePage({ params }: { params: Promise<{ roo
     .eq('room_id', roomId)
     .single()
 
+  // If game state is missing or tokens aren't a valid array, we can't render the game
+  if (!gameState || !Array.isArray(gameState.tokens)) redirect('/home')
+
   const { data: myProfile } = await supabase
     .from('profiles')
     .select('display_name')
@@ -31,6 +34,12 @@ export default async function OnlineGamePage({ params }: { params: Promise<{ roo
 
   const myPlayer = room.game_players.find((p: { player_id: string }) => p.player_id === user.id)
 
+  // If the user is forfeited (no longer an active participant), send them home
+  if (myPlayer?.status === 'forfeited') redirect('/home')
+  const stake = (room as any).stake ?? 0
+  const numHuman = room.game_players.filter((p: { is_computer: boolean }) => !p.is_computer).length
+  const pot = stake * numHuman
+
   return (
     <OnlineGameClient
       room={room}
@@ -38,6 +47,7 @@ export default async function OnlineGamePage({ params }: { params: Promise<{ roo
       currentUserId={user.id}
       myColor={myPlayer?.color ?? null}
       myDisplayName={myProfile?.display_name ?? 'Player'}
+      pot={pot}
     />
   )
 }
