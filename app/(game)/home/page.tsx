@@ -1,7 +1,7 @@
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/server'
 import HomeClientSection from './HomeClientSection'
-import { AVATARS } from '@/components/PlayerAvatar'
+import PlayerAvatar from '@/components/PlayerAvatar'
 
 export const dynamic = 'force-dynamic'
 
@@ -30,15 +30,12 @@ export default async function HomePage() {
     : { data: null }
 
   const avatarId: number = (profile as any)?.avatar_id ?? 1
-  const avatar = AVATARS.find(a => a.id === avatarId) ?? AVATARS[0]
 
   return (
     <div className="flex flex-col flex-1 px-5 py-6 gap-5">
       <div className="flex items-center gap-3">
         {profile && (
-          <div className={`w-14 h-14 rounded-2xl bg-gradient-to-br ${avatar.bg} flex items-center justify-center text-3xl shadow-md flex-shrink-0`}>
-            {avatar.emoji}
-          </div>
+          <PlayerAvatar avatarId={avatarId} size="lg" />
         )}
         <div>
           <h2 className="text-2xl font-black text-amber-900">
