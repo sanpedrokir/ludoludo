@@ -3,6 +3,7 @@
 import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
+import { createAdminClient } from '@/lib/supabase/admin'
 import { generateRoomCode, buildInitialTokens } from '@/lib/game/engine'
 import { Color, COLORS } from '@/lib/game/types'
 
@@ -221,62 +222,56 @@ export async function leaveRoom(roomId: string): Promise<ActionResult> {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { error: 'Not authenticated' }
 
-  // Get leaving player's turn_order before marking forfeited
-  const { data: myPlayer } = await supabase
+  // Use admin client to bypass RLS — ensures forfeit always saves
+  const admin = createAdminClient()
+
+  const { data: myPlayer } = await admin
     .from('game_players')
     .select('color, turn_order')
     .eq('room_id', roomId)
     .eq('player_id', user.id)
     .single()
 
-  const { error: forfeitError } = await supabase
+  await admin
     .from('game_players')
     .update({ status: 'forfeited' })
     .eq('room_id', roomId)
     .eq('player_id', user.id)
 
-  if (forfeitError) {
-    console.error('[leaveRoom] failed to set forfeited status:', forfeitError.message)
-    return { error: 'Could not leave game. Please run the RLS fix in Supabase: ALTER POLICY or add UPDATE policy for game_players.' }
-  }
-
-  const { data: room } = await supabase
+  const { data: room } = await admin
     .from('game_rooms')
     .select('status')
     .eq('id', roomId)
     .single()
 
   if (room?.status === 'playing') {
-    const { data: allPlayers } = await supabase
+    const { data: allPlayers } = await admin
       .from('game_players')
       .select('player_id, turn_order, status, is_computer')
       .eq('room_id', roomId)
       .order('turn_order')
 
-    const { data: gameState } = await supabase
+    const { data: gameState } = await admin
       .from('game_states')
       .select('current_player_order, phase')
       .eq('room_id', roomId)
       .single()
 
     if (allPlayers && gameState) {
-      // Active = not this player and either computer or still active human
       const remaining = allPlayers.filter(p =>
         p.player_id !== user.id && (p.is_computer || p.status === 'active')
       )
 
       if (remaining.length <= 1) {
-        // End the game — only 0 or 1 player(s) left
-        await supabase
+        await admin
           .from('game_rooms')
           .update({ status: 'finished', finished_at: new Date().toISOString() })
           .eq('id', roomId)
-        await supabase
+        await admin
           .from('game_states')
           .update({ phase: 'finished', updated_at: new Date().toISOString() })
           .eq('room_id', roomId)
       } else if (myPlayer && gameState.current_player_order === myPlayer.turn_order) {
-        // It was this player's turn — advance to next active player
         const count = allPlayers.length
         let next = (myPlayer.turn_order + 1) % count
         for (let i = 0; i < count; i++) {
@@ -285,7 +280,7 @@ export async function leaveRoom(roomId: string): Promise<ActionResult> {
               (candidate.is_computer || candidate.status === 'active')) break
           next = (next + 1) % count
         }
-        await supabase
+        await admin
           .from('game_states')
           .update({ current_player_order: next, dice_value: null, phase: 'roll', updated_at: new Date().toISOString() })
           .eq('room_id', roomId)

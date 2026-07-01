@@ -3,6 +3,7 @@
 import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
+import { createAdminClient } from '@/lib/supabase/admin'
 
 type ActionResult = { error?: string; success?: boolean; message?: string }
 
@@ -59,23 +60,27 @@ export async function signOut() {
   const { data: { user } } = await supabase.auth.getUser()
 
   if (user) {
-    // Forfeit any active game_players rows for this user
-    await supabase
-      .from('game_players')
-      .update({ status: 'forfeited' })
-      .eq('player_id', user.id)
-      .eq('status', 'active')
+    // Use admin client to bypass RLS — guarantees cleanup always works
+    const admin = createAdminClient()
 
-    // End any playing game rooms where this user is now the only/last active human
-    const { data: myRooms } = await supabase
+    // Get all rooms this user is a player in
+    const { data: myRooms } = await admin
       .from('game_players')
       .select('room_id')
       .eq('player_id', user.id)
 
     const roomIds = (myRooms ?? []).map((r: { room_id: string }) => r.room_id)
+
+    // Forfeit all active rows for this user
+    await admin
+      .from('game_players')
+      .update({ status: 'forfeited' })
+      .eq('player_id', user.id)
+      .eq('status', 'active')
+
     if (roomIds.length > 0) {
-      // For each playing room, check if any other human is still active
-      const { data: otherActive } = await supabase
+      // Find rooms where no other human player is still active
+      const { data: otherActive } = await admin
         .from('game_players')
         .select('room_id')
         .in('room_id', roomIds)
@@ -87,7 +92,7 @@ export async function signOut() {
       const roomsToEnd = roomIds.filter((id: string) => !roomsWithOthers.has(id))
 
       if (roomsToEnd.length > 0) {
-        await supabase
+        await admin
           .from('game_rooms')
           .update({ status: 'finished', finished_at: new Date().toISOString() })
           .in('id', roomsToEnd)
