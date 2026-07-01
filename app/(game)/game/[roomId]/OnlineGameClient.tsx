@@ -10,6 +10,9 @@ import { chooseComputerMove, rollDice } from '@/lib/game/ai'
 import { Color, TokenState, GameState, PlayerState } from '@/lib/game/types'
 import { leaveRoom, recordOnlineGameResult } from '@/lib/actions/game'
 import { addBalance } from '@/lib/actions/economy'
+import { playCashSound } from '@/lib/sounds'
+import PlayerAvatar from '@/components/PlayerAvatar'
+import ChatWindow from '@/components/ChatWindow'
 
 const WIN_REWARDS = [10000, 5000, 1000, 200]
 const RANK_LABELS = ['🥇 1st', '🥈 2nd', '🥉 3rd', '4th']
@@ -32,7 +35,7 @@ interface DbPlayer {
   turn_order: number
   player_id?: string
   status: string
-  profiles?: { display_name: string } | null
+  profiles?: { display_name: string; avatar_id?: number } | null
 }
 
 interface Props {
@@ -41,6 +44,7 @@ interface Props {
   currentUserId: string
   myColor: Color | null
   myDisplayName: string
+  pot: number
 }
 
 function dbToGameState(db: DbGameState, players: PlayerState[]): GameState {
@@ -54,12 +58,12 @@ function dbToGameState(db: DbGameState, players: PlayerState[]): GameState {
   }
 }
 
-export default function OnlineGameClient({ room, initialGameState, currentUserId, myColor, myDisplayName }: Props) {
+export default function OnlineGameClient({ room, initialGameState, currentUserId, myColor, myDisplayName, pot }: Props) {
   const router = useRouter()
   const supabase = useMemo(() => createClient(), [])
 
   const players: PlayerState[] = room.game_players
-    .sort((a, b) => a.turn_order - b.turn_order)
+    .sort((a, b) => a.turn_order - b.turn_order || a.color.localeCompare(b.color))
     .map(p => ({
       color: p.color,
       isComputer: p.is_computer,
@@ -67,6 +71,7 @@ export default function OnlineGameClient({ room, initialGameState, currentUserId
       turnOrder: p.turn_order,
       playerId: p.player_id,
       displayName: p.is_computer ? 'CPU' : (p.profiles?.display_name ?? 'Player'),
+      avatarId: p.profiles?.avatar_id ?? 1,
       tokensDone: 0,
       capturesMade: 0,
       status: p.status as PlayerState['status'],
@@ -79,7 +84,8 @@ export default function OnlineGameClient({ room, initialGameState, currentUserId
     })))
   )
   const [turnTimer, setTurnTimer] = useState(30)
-  const [earnNotif, setEarnNotif] = useState<string | null>(null)
+  const [earnNotif, setEarnNotif] = useState<{ amount: number; label: string } | null>(null)
+  const [balance, setBalance] = useState(0)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const aiTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const resultSubmittedRef = useRef(false)
@@ -93,10 +99,27 @@ export default function OnlineGameClient({ room, initialGameState, currentUserId
     : []
 
   function earnCash(amount: number, label: string) {
-    setEarnNotif(`+$${amount.toLocaleString()} ${label}`)
-    setTimeout(() => setEarnNotif(null), 2500)
+    playCashSound()
+    setBalance(prev => prev + amount)
+    setEarnNotif({ amount, label })
+    setTimeout(() => setEarnNotif(null), 2200)
     addBalance(amount).catch(console.error)
   }
+
+  function deductCash(amount: number, label: string) {
+    setBalance(prev => prev - amount)
+    setEarnNotif({ amount: -amount, label })
+    setTimeout(() => setEarnNotif(null), 2200)
+    addBalance(-amount).catch(console.error)
+  }
+
+  // Fetch initial balance on mount
+  useEffect(() => {
+    const supabase = createClient()
+    supabase.from('profiles').select('balance').eq('id', currentUserId).single()
+      .then(({ data }) => setBalance((data as any)?.balance ?? 0))
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   async function persistState(state: GameState) {
     await supabase
@@ -122,8 +145,8 @@ export default function OnlineGameClient({ room, initialGameState, currentUserId
       ? (myPlayer.rank ?? gameState.players.length)
       : (myPlayer.status === 'active' ? 1 : gameState.players.length)
     const reward = WIN_REWARDS[Math.min(myRank - 1, WIN_REWARDS.length - 1)]
-    setEarnNotif(`+$${reward.toLocaleString()} ${RANK_LABELS[Math.min(myRank - 1, 3)]} Place!`)
-    recordOnlineGameResult(myRank)
+    earnCash(reward, `${RANK_LABELS[Math.min(myRank - 1, 3)]} Place!`)
+    recordOnlineGameResult(myRank, room.id)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isFinished])
 
@@ -136,13 +159,23 @@ export default function OnlineGameClient({ room, initialGameState, currentUserId
         { event: 'UPDATE', schema: 'public', table: 'game_states', filter: `room_id=eq.${room.id}` },
         (payload) => {
           const db = payload.new as DbGameState
-          setGameState(prev => ({
-            ...prev,
-            currentPlayerOrder: db.current_player_order,
-            diceValue: db.dice_value,
-            phase: db.phase as GameState['phase'],
-            tokens: db.tokens,
-          }))
+          setGameState(prev => {
+            // Detect if opponent captured one of my tokens (went from main track to base)
+            if (myColor) {
+              const myPrevOnTrack = prev.tokens.filter(t => t.color === myColor && t.position >= 0 && t.position <= 51)
+              const myNewOnTrack = (db.tokens as TokenState[]).filter(t => t.color === myColor && t.position >= 0 && t.position <= 51)
+              if (myNewOnTrack.length < myPrevOnTrack.length) {
+                setTimeout(() => deductCash(500, '💀 Token sent back!'), 0)
+              }
+            }
+            return {
+              ...prev,
+              currentPlayerOrder: db.current_player_order,
+              diceValue: db.dice_value,
+              phase: db.phase as GameState['phase'],
+              tokens: db.tokens,
+            }
+          })
         }
       )
       .subscribe()
@@ -241,7 +274,9 @@ export default function OnlineGameClient({ room, initialGameState, currentUserId
   async function handleRoll() {
     if (!isMyTurn || gameState.phase !== 'roll') return
     const value = rollDice()
-    earnCash(value * 100, `🎲 Dice ${value}!`)
+    // No dice reward until the player has at least one token out of the base
+    const hasStarted = gameState.tokens.some(t => t.color === myColor && t.position !== -1)
+    if (hasStarted) earnCash(value === 6 ? 600 : value * 10, `🎲 Dice ${value}!`)
     const rolledState = { ...gameState, diceValue: value, phase: 'move' as const }
     setGameState(rolledState)
     await persistState(rolledState)
@@ -271,7 +306,7 @@ export default function OnlineGameClient({ room, initialGameState, currentUserId
     const result = applyMove(gameState.tokens, color, index, gameState.diceValue)
 
     if (color === myColor) {
-      if (result.captured) earnCash(2000, '🎯 Capture!')
+      if (result.captured) earnCash(1000, '🎯 Capture!')
       const newDone = countDoneTokens(result.tokens, myColor!)
       const oldDone = countDoneTokens(gameState.tokens, myColor!)
       if (newDone > oldDone) earnCash(5000 * (newDone - oldDone), '🏠 Token home!')
@@ -334,8 +369,10 @@ export default function OnlineGameClient({ room, initialGameState, currentUserId
         )}
         {myColor && (
           <div className="bg-green-100 border border-green-300 rounded-2xl px-6 py-3 text-center">
-            <div className="text-green-700 font-black text-xl">+${myReward.toLocaleString()}</div>
-            <div className="text-green-600 text-xs">{RANK_LABELS[Math.min(myRank - 1, 3)]} Place Reward</div>
+            <div className="text-green-700 font-black text-xl">
+              +${(myReward + (myRank === 1 ? pot : 0)).toLocaleString()}
+            </div>
+            <div className="text-green-600 text-xs">{RANK_LABELS[Math.min(myRank - 1, 3)]} Place Reward{myRank === 1 && pot > 0 ? ` + $${pot.toLocaleString()} Pot` : ''}</div>
           </div>
         )}
         <div className="w-full max-w-sm bg-white rounded-2xl shadow p-4">
@@ -362,15 +399,19 @@ export default function OnlineGameClient({ room, initialGameState, currentUserId
 
   return (
     <div className="flex flex-col flex-1 items-center px-2 py-4 gap-4">
-      {/* Cash notification */}
+      {/* Cash notification — big, center-bottom */}
       {earnNotif && (
-        <div className="fixed top-20 right-3 z-50 bg-green-500 text-white font-black px-4 py-2 rounded-2xl shadow-lg text-sm animate-bounce">
-          {earnNotif}
+        <div className="fixed bottom-28 left-1/2 -translate-x-1/2 z-50 flex flex-col items-center animate-bounce pointer-events-none">
+          <div className={`${earnNotif.amount < 0 ? 'bg-red-500' : 'bg-green-500'} text-white font-black text-2xl px-8 py-4 rounded-3xl shadow-2xl flex items-center gap-3 whitespace-nowrap`}>
+            <span>{earnNotif.amount < 0 ? '💸' : '💰'}</span>
+            <span>{earnNotif.amount < 0 ? `-$${Math.abs(earnNotif.amount).toLocaleString()}` : `+$${earnNotif.amount.toLocaleString()}`}</span>
+          </div>
+          <div className={`mt-1 ${earnNotif.amount < 0 ? 'text-red-400' : 'text-green-400'} font-semibold text-sm`}>{earnNotif.label}</div>
         </div>
       )}
 
       <div className="flex items-center gap-3 px-4 py-2 rounded-full bg-white shadow">
-        <span className={`w-4 h-4 rounded-full ${currentPlayer.color === 'red' ? 'bg-red-500' : currentPlayer.color === 'blue' ? 'bg-blue-500' : currentPlayer.color === 'green' ? 'bg-green-500' : 'bg-yellow-400'}`} />
+        <PlayerAvatar avatarId={currentPlayer.avatarId} isComputer={currentPlayer.isComputer} size="sm" />
         <span className="font-semibold text-amber-900 text-sm">
           {isMyTurn ? 'Your turn' : `${currentPlayer.displayName}'s turn`}
         </span>
@@ -388,40 +429,56 @@ export default function OnlineGameClient({ room, initialGameState, currentUserId
         />
       </BoardScaler>
 
-      <div className="flex items-center gap-6 bg-white rounded-2xl shadow px-6 py-4">
-        {gameState.diceValue !== null && (
-          <div className="flex flex-col items-center gap-1">
-            <span className="text-xs text-amber-500 font-semibold">Rolled</span>
-            <div className="w-14 h-14 rounded-xl bg-amber-600 text-white flex items-center justify-center text-3xl font-black shadow">
-              {gameState.diceValue}
+      <div className="flex items-center gap-4 bg-white rounded-2xl shadow px-5 py-3 w-full max-w-sm justify-between">
+        {/* Live balance + pot */}
+        <div className="flex flex-col items-center min-w-[80px]">
+          <span className="text-[10px] text-amber-500 font-semibold uppercase tracking-wide">Balance</span>
+          <span className="text-amber-700 font-black text-base">${balance.toLocaleString()}</span>
+          {pot > 0 && (
+            <span className="text-[9px] text-green-600 font-black mt-0.5">🏆 POT ${pot.toLocaleString()}</span>
+          )}
+        </div>
+
+        {/* Dice + action */}
+        <div className="flex items-center gap-3">
+          {gameState.diceValue !== null && (
+            <div className="flex flex-col items-center gap-0.5">
+              <span className="text-[10px] text-amber-500 font-semibold">Rolled</span>
+              <div className="w-14 h-14 rounded-xl bg-amber-600 text-white flex items-center justify-center text-3xl font-black shadow">
+                {gameState.diceValue}
+              </div>
             </div>
-            {isMyTurn && gameState.phase === 'move' && validMoves.length === 0 && (
-              <span className="text-xs text-red-500 font-semibold">No moves!</span>
-            )}
-          </div>
-        )}
-        {isMyTurn && gameState.phase === 'roll' && (
-          <button onClick={handleRoll} className="px-6 py-3 rounded-2xl bg-amber-600 text-white font-black text-lg hover:bg-amber-700 active:scale-95 transition-all shadow">
-            Roll 🎲
-          </button>
-        )}
-        {isMyTurn && gameState.phase === 'move' && validMoves.length === 0 && (
-          <button onClick={handleSkip} className="px-6 py-3 rounded-2xl bg-gray-400 text-white font-bold hover:bg-gray-500 transition-colors">
-            Skip Turn
-          </button>
-        )}
-        {!isMyTurn && !currentPlayer.isComputer && (
-          <span className="text-amber-500 text-sm animate-pulse">Waiting for {currentPlayer.displayName}…</span>
-        )}
-        {currentPlayer.isComputer && (
-          <span className="text-amber-500 text-sm animate-pulse">🤖 Computer is thinking…</span>
-        )}
+          )}
+          {isMyTurn && gameState.phase === 'roll' && (
+            <div className="flex flex-col items-center gap-1">
+              <button onClick={handleRoll} className="px-5 py-3 rounded-2xl bg-amber-600 text-white font-black text-base hover:bg-amber-700 active:scale-95 transition-all shadow">
+                Roll 🎲
+              </button>
+              {myColor && gameState.tokens.filter(t => t.color === myColor).every(t => t.position === -1) && (
+                <span className="text-[10px] text-amber-400">Roll 1 or 6 to enter the board</span>
+              )}
+            </div>
+          )}
+          {isMyTurn && gameState.phase === 'move' && validMoves.length === 0 && (
+            <button onClick={handleSkip} className="px-5 py-3 rounded-2xl bg-gray-400 text-white font-bold hover:bg-gray-500 transition-colors">
+              Skip
+            </button>
+          )}
+          {!isMyTurn && !currentPlayer.isComputer && (
+            <span className="text-amber-500 text-sm animate-pulse">Waiting for {currentPlayer.displayName}…</span>
+          )}
+          {currentPlayer.isComputer && (
+            <span className="text-amber-500 text-sm animate-pulse">🤖 Thinking…</span>
+          )}
+        </div>
       </div>
 
       <div className="flex gap-2 flex-wrap justify-center">
         {gameState.players.map(p => (
-          <div key={p.color} className={`px-3 py-1 rounded-full text-xs font-semibold border-2 ${p.color === currentPlayer.color ? 'border-amber-600' : 'border-transparent'} ${p.status === 'forfeited' ? 'opacity-40 line-through' : ''} ${p.color === 'red' ? 'bg-red-100 text-red-800' : p.color === 'blue' ? 'bg-blue-100 text-blue-800' : p.color === 'green' ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'}`}>
-            {p.displayName} {p.isComputer ? '🤖' : '👤'} {p.tokensDone}/4{p.status === 'forfeited' ? ' (left)' : ''}
+          <div key={p.color} className={`flex items-center gap-1.5 px-2 py-1 rounded-2xl text-xs font-semibold border-2 ${p.color === currentPlayer.color ? 'border-amber-600' : 'border-transparent'} ${p.status === 'forfeited' ? 'opacity-40' : ''} ${p.color === 'red' ? 'bg-red-100 text-red-800' : p.color === 'blue' ? 'bg-blue-100 text-blue-800' : p.color === 'green' ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'}`}>
+            <PlayerAvatar avatarId={p.avatarId} isComputer={p.isComputer} size="sm" />
+            <span className={p.status === 'forfeited' ? 'line-through' : ''}>{p.displayName}</span>
+            <span className="opacity-70">{p.tokensDone}/4</span>
           </div>
         ))}
       </div>
@@ -433,6 +490,14 @@ export default function OnlineGameClient({ room, initialGameState, currentUserId
         Leave Game
       </button>
 
+      {myColor && (
+        <ChatWindow
+          roomId={room.id}
+          currentUserId={currentUserId}
+          displayName={myDisplayName}
+          avatarId={players.find(p => p.color === myColor)?.avatarId ?? 1}
+        />
+      )}
     </div>
   )
 }

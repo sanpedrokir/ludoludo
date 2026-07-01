@@ -16,6 +16,7 @@ export interface PlayerState {
   turnOrder: number   // 0–3
   playerId?: string   // null for computer players
   displayName: string
+  avatarId?: number
   rank?: number
   tokensDone: number
   capturesMade: number

@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { Color, Difficulty } from '@/lib/game/types'
+import { Color } from '@/lib/game/types'
 
 const COLORS: { value: Color; label: string; bg: string; border: string }[] = [
   { value: 'red', label: 'Red', bg: 'bg-red-500', border: 'border-red-500' },
@@ -11,23 +11,16 @@ const COLORS: { value: Color; label: string; bg: string; border: string }[] = [
   { value: 'yellow', label: 'Yellow', bg: 'bg-yellow-400', border: 'border-yellow-400' },
 ]
 
-const DIFFICULTIES: { value: Difficulty; label: string; desc: string }[] = [
-  { value: 'easy', label: 'Easy', desc: 'Random moves' },
-  { value: 'normal', label: 'Normal', desc: 'Smart play' },
-  { value: 'hard', label: 'Hard', desc: 'Ruthless AI' },
-]
-
 export default function PlayComputerPage() {
   const router = useRouter()
   const [numPlayers, setNumPlayers] = useState(4)
   const [myColor, setMyColor] = useState<Color>('red')
-  const [difficulty, setDifficulty] = useState<Difficulty>('normal')
 
   function handleStart() {
     const params = new URLSearchParams({
       players: numPlayers.toString(),
       color: myColor,
-      difficulty,
+      difficulty: 'normal',
       mode: 'computer',
     })
     router.push(`/game/local?${params}`)
@@ -76,29 +69,6 @@ export default function PlayComputerPage() {
             >
               <span className={`w-5 h-5 rounded-full ${c.bg}`} />
               {c.label}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Difficulty */}
-      <div>
-        <h3 className="font-bold text-amber-800 mb-3">Computer Difficulty</h3>
-        <div className="flex flex-col gap-2">
-          {DIFFICULTIES.map(d => (
-            <button
-              key={d.value}
-              onClick={() => setDifficulty(d.value)}
-              className={`flex items-center justify-between px-4 py-3 rounded-xl border-2 transition-colors ${
-                difficulty === d.value
-                  ? 'bg-amber-600 text-white border-amber-600'
-                  : 'bg-white text-amber-800 border-amber-200 hover:border-amber-400'
-              }`}
-            >
-              <span className="font-bold">{d.label}</span>
-              <span className={`text-sm ${difficulty === d.value ? 'text-amber-200' : 'text-amber-500'}`}>
-                {d.desc}
-              </span>
             </button>
           ))}
         </div>

@@ -4,20 +4,12 @@ import { useEffect, useState, useActionState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { updateProfile } from '@/lib/actions/auth'
 import Link from 'next/link'
+import { AVATARS as BASE_AVATARS } from '@/components/PlayerAvatar'
 
 const AVATARS = [
-  { id: 1,  emoji: '🤵',  bg: 'from-blue-900 to-blue-600',       label: 'CEO' },
-  { id: 2,  emoji: '👩‍💼', bg: 'from-purple-800 to-purple-600',   label: 'Director' },
-  { id: 3,  emoji: '🤴',  bg: 'from-yellow-700 to-amber-500',    label: 'Prince' },
-  { id: 4,  emoji: '👸',  bg: 'from-pink-700 to-rose-400',       label: 'Princess' },
-  { id: 5,  emoji: '🧔',  bg: 'from-slate-700 to-slate-500',     label: 'Mogul' },
-  { id: 6,  emoji: '👩‍🎤', bg: 'from-rose-700 to-rose-500',      label: 'Star' },
-  { id: 7,  emoji: '🕺',  bg: 'from-indigo-700 to-indigo-500',   label: 'VIP' },
-  { id: 8,  emoji: '💃',  bg: 'from-fuchsia-700 to-fuchsia-500', label: 'Elite' },
-  { id: 9,  emoji: '🧑‍💼', bg: 'from-teal-700 to-teal-500',      label: 'Executive' },
-  { id: 10, emoji: '👩‍🚀', bg: 'from-cyan-700 to-cyan-500',      label: 'Visionary' },
-  { id: 11, emoji: '🏋️', bg: 'from-orange-700 to-orange-500',   label: 'Champion' },
-  { id: 12, emoji: '🧕',  bg: 'from-emerald-700 to-emerald-500', label: 'Icon' },
+  ...BASE_AVATARS.slice(0, 12).map((a, i) => ({ ...a, label: ['CEO','Director','Prince','Princess','Mogul','Star','Artist','Elite','Executive','Visionary','Champion','Icon'][i] })),
+  { ...BASE_AVATARS[12], label: 'MJ' },
+  { ...BASE_AVATARS[13], label: 'Madonna' },
 ]
 
 interface Profile {
@@ -71,8 +63,6 @@ export default function ProfilePage() {
         </div>
         <div className="flex items-center gap-2 bg-amber-100 px-4 py-1.5 rounded-full">
           <span className="text-sm font-black text-amber-700">💰 ${balance.toLocaleString()}</span>
-          <Link href="/shop" className="text-xs text-amber-500 hover:text-amber-700 underline">Shop</Link>
-          <Link href="/collection" className="text-xs text-amber-500 hover:text-amber-700 underline">Collection</Link>
         </div>
       </div>
 

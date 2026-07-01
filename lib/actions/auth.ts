@@ -17,15 +17,23 @@ export async function signUp(_prev: ActionResult, formData: FormData): Promise<A
   const email = formData.get('email') as string
   const password = formData.get('password') as string
   const displayName = formData.get('displayName') as string
+  const avatarId = parseInt(formData.get('avatarId') as string) || 1
   const next = safeNext(formData.get('next'))
 
-  const { error } = await supabase.auth.signUp({
+  const { data, error } = await supabase.auth.signUp({
     email,
     password,
-    options: { data: { display_name: displayName } },
+    options: { data: { display_name: displayName, avatar_id: avatarId } },
   })
 
   if (error) return { error: error.message }
+
+  if (data.user) {
+    await supabase
+      .from('profiles')
+      .update({ avatar_id: avatarId })
+      .eq('id', data.user.id)
+  }
 
   revalidatePath('/', 'layout')
   redirect(next)

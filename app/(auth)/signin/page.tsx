@@ -1,11 +1,11 @@
 'use client'
 
-import { useState, useActionState } from 'react'
+import { Suspense, useState, useActionState } from 'react'
 import { useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { signInWithPassword } from '@/lib/actions/auth'
 
-export default function SignInPage() {
+function SignInContent() {
   const searchParams = useSearchParams()
   const next = searchParams.get('next') ?? ''
 
@@ -67,5 +67,13 @@ export default function SignInPage() {
         </Link>
       </p>
     </div>
+  )
+}
+
+export default function SignInPage() {
+  return (
+    <Suspense>
+      <SignInContent />
+    </Suspense>
   )
 }

@@ -21,7 +21,7 @@ export default async function LobbyPage({ params }: { params: Promise<{ roomId: 
 
   const { data: myProfile } = await supabase
     .from('profiles')
-    .select('display_name')
+    .select('display_name, avatar_id')
     .eq('id', user.id)
     .single()
 
@@ -31,6 +31,7 @@ export default async function LobbyPage({ params }: { params: Promise<{ roomId: 
       currentUserId={user.id}
       isHost={room.host_id === user.id}
       myDisplayName={myProfile?.display_name ?? 'Player'}
+      myAvatarId={(myProfile as any)?.avatar_id ?? 1}
     />
   )
 }

@@ -29,18 +29,25 @@ const FINAL_LANE_COORDS: Record<Color, [number, number][]> = {
 }
 
 const HOME_TOKEN_POSITIONS: Record<Color, [number, number][]> = {
-  red:    [[2, 2], [2, 4], [4, 2], [4, 4]],
-  blue:   [[2, 10], [2, 12], [4, 10], [4, 12]],
-  green:  [[10, 10], [10, 12], [12, 10], [12, 12]],
-  yellow: [[10, 2], [10, 4], [12, 2], [12, 4]],
+  red:    [[10, 2], [10, 4], [12, 2], [12, 4]],   // bottom-left
+  blue:   [[2, 2], [2, 4], [4, 2], [4, 4]],         // top-left
+  green:  [[2, 10], [2, 12], [4, 10], [4, 12]],     // top-right
+  yellow: [[10, 10], [10, 12], [12, 10], [12, 12]], // bottom-right
 }
 
-// Token colours
+// Token colours (Tailwind for done-count badges, SVG fills for pieces)
 const TOKEN_BG: Record<Color, string> = {
   red:    'bg-red-500',
   blue:   'bg-blue-500',
   green:  'bg-green-600',
   yellow: 'bg-yellow-400',
+}
+
+const TOKEN_COLOR: Record<Color, { fill: string; dark: string }> = {
+  red:    { fill: '#ef4444', dark: '#991b1b' },
+  blue:   { fill: '#3b82f6', dark: '#1e3a8a' },
+  green:  { fill: '#16a34a', dark: '#14532d' },
+  yellow: { fill: '#facc15', dark: '#92400e' },
 }
 
 // Safe square absolute positions
@@ -65,11 +72,11 @@ for (const [color, cells] of Object.entries(FINAL_LANE_COORDS) as [Color, [numbe
 function getCellBg(row: number, col: number): string {
   const key = `${row},${col}`
 
-  // Home areas — soft pastel fill
-  if (row <= 5 && col <= 5) return 'bg-red-200'
-  if (row <= 5 && col >= 9) return 'bg-blue-200'
-  if (row >= 9 && col >= 9) return 'bg-green-100'
-  if (row >= 9 && col <= 5) return 'bg-yellow-200'
+  // Home areas — soft pastel fill (matched to track entry points)
+  if (row <= 5 && col <= 5) return 'bg-blue-200'    // top-left = Blue
+  if (row <= 5 && col >= 9) return 'bg-green-100'   // top-right = Green
+  if (row >= 9 && col >= 9) return 'bg-yellow-200'  // bottom-right = Yellow
+  if (row >= 9 && col <= 5) return 'bg-red-200'     // bottom-left = Red
 
   // Center cell
   if (row === 7 && col === 7) return 'bg-amber-50'
@@ -130,20 +137,35 @@ export default function LudoBoard({ tokens, currentColor, validMoves, onTokenCli
 
   function renderToken(token: TokenState, size = 28) {
     const isValid = token.color === currentColor && validMoves.includes(token.index)
+    const { fill, dark } = TOKEN_COLOR[token.color]
     return (
       <button
         key={`${token.color}-${token.index}`}
         onClick={() => isValid && onTokenClick?.(token.color, token.index)}
-        className={`
-          rounded-full ${TOKEN_BG[token.color]} text-white font-bold border-2 border-white
-          flex items-center justify-center select-none transition-transform duration-150
-          ${size >= 24 ? 'text-xs' : 'text-[9px]'}
-          ${isValid ? 'ring-4 ring-white ring-offset-1 animate-pulse scale-110 cursor-pointer' : 'cursor-default shadow-md'}
-        `}
-        style={{ width: size, height: size, flexShrink: 0 }}
+        className={`select-none transition-transform duration-150 ${isValid ? 'animate-pulse scale-110 cursor-pointer' : 'cursor-default'}`}
+        style={{ width: size, height: size, flexShrink: 0, background: 'none', border: 'none', padding: 0 }}
         title={isValid ? 'Click to move' : ''}
       >
-        {token.index + 1}
+        <svg
+          width={size}
+          height={size}
+          viewBox="0 0 28 28"
+          style={{ filter: isValid ? 'drop-shadow(0 0 3px white)' : 'drop-shadow(0 1px 2px rgba(0,0,0,0.5))' }}
+        >
+          {/* Base shadow */}
+          <ellipse cx="14" cy="25.5" rx="7" ry="2" fill="rgba(0,0,0,0.18)" />
+          {/* Body */}
+          <path
+            d="M 11,16 C 8,17 6,21 6.5,24.5 Q 14,28.5 21.5,24.5 C 22,21 20,17 17,16 Z"
+            fill={fill}
+            stroke={dark}
+            strokeWidth="1"
+          />
+          {/* Head */}
+          <circle cx="14" cy="9" r="7" fill={fill} stroke={dark} strokeWidth="1" />
+          {/* Shine */}
+          <ellipse cx="11" cy="6.5" rx="2.5" ry="1.8" fill="rgba(255,255,255,0.45)" />
+        </svg>
       </button>
     )
   }
@@ -211,15 +233,15 @@ export default function LudoBoard({ tokens, currentColor, validMoves, onTokenCli
         })
       )}
 
-      {/* Corner labels */}
-      <div className="absolute font-black text-red-700 text-[11px] tracking-wider pointer-events-none select-none"
-        style={{ left: 8, top: 6 }}>RED</div>
+      {/* Corner labels — matched to home positions */}
       <div className="absolute font-black text-blue-700 text-[11px] tracking-wider pointer-events-none select-none"
-        style={{ left: 9*CELL + 8, top: 6 }}>BLUE</div>
+        style={{ left: 8, top: 6 }}>BLUE</div>
       <div className="absolute font-black text-green-700 text-[11px] tracking-wider pointer-events-none select-none"
-        style={{ left: 9*CELL + 8, top: 14*CELL + 6 }}>GREEN</div>
+        style={{ left: 9*CELL + 8, top: 6 }}>GREEN</div>
       <div className="absolute font-black text-yellow-600 text-[11px] tracking-wider pointer-events-none select-none"
-        style={{ left: 8, top: 14*CELL + 6 }}>YELLOW</div>
+        style={{ left: 9*CELL + 8, top: 14*CELL + 6 }}>YELLOW</div>
+      <div className="absolute font-black text-red-700 text-[11px] tracking-wider pointer-events-none select-none"
+        style={{ left: 8, top: 14*CELL + 6 }}>RED</div>
     </div>
   )
 }

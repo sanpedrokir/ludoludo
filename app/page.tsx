@@ -1,10 +1,13 @@
 import Link from 'next/link'
+import LudoIcon from '@/components/LudoIcon'
 
 export default function WelcomePage() {
   return (
     <main className="flex flex-col flex-1 items-center justify-center px-6 py-16 text-center">
       <div className="mb-10">
-        <div className="text-7xl mb-4">🎲</div>
+        <div className="flex justify-center mb-4">
+          <LudoIcon size={96} />
+        </div>
         <h1 className="text-5xl font-black text-amber-900 tracking-tight mb-2">LudoLudo</h1>
         <p className="text-amber-700 text-lg">Classic Ludo. Play anywhere. Play together.</p>
       </div>
@@ -30,6 +33,8 @@ export default function WelcomePage() {
         <span className="text-green-500">●</span>
         <span className="text-yellow-500">●</span>
       </div>
+
+      <p className="mt-8 text-xs text-gray-400 italic">By Kiry</p>
     </main>
   )
 }

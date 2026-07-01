@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { startGame, leaveRoom } from '@/lib/actions/game'
 import { Color } from '@/lib/game/types'
+import ChatWindow from '@/components/ChatWindow'
 
 const COLOR_CLASS: Record<Color, string> = {
   red: 'bg-red-500',
@@ -29,6 +30,7 @@ interface Room {
   host_id: string
   max_players: number
   status: string
+  stake: number
   game_players: Player[]
 }
 
@@ -37,9 +39,10 @@ interface Props {
   currentUserId: string
   isHost: boolean
   myDisplayName: string
+  myAvatarId: number
 }
 
-export default function LobbyClient({ room, currentUserId, isHost, myDisplayName }: Props) {
+export default function LobbyClient({ room, currentUserId, isHost, myDisplayName, myAvatarId }: Props) {
   const router = useRouter()
   const supabase = useMemo(() => createClient(), [])
 
@@ -113,6 +116,7 @@ export default function LobbyClient({ room, currentUserId, isHost, myDisplayName
 
   const humanPlayers = players.filter(p => !p.is_computer)
   const canStart = isHost && humanPlayers.length >= 2
+  const pot = (room.stake ?? 0) * humanPlayers.length
 
   return (
     <div className="px-5 py-6 flex flex-col gap-5 max-w-md mx-auto w-full">
@@ -129,6 +133,17 @@ export default function LobbyClient({ room, currentUserId, isHost, myDisplayName
           Code: <span className="font-mono font-black text-amber-900 text-xl tracking-widest">{room.room_code}</span>
         </p>
       </div>
+
+      {/* Stake pot display */}
+      {(room.stake ?? 0) > 0 && (
+        <div className="bg-gradient-to-r from-amber-500 to-amber-700 rounded-2xl p-4 text-white text-center shadow-md">
+          <div className="text-xs font-semibold text-amber-200 uppercase tracking-wider mb-1">💰 Prize Pot</div>
+          <div className="text-4xl font-black">${pot.toLocaleString()}</div>
+          <div className="text-amber-200 text-xs mt-1">
+            {humanPlayers.length} × ${(room.stake ?? 0).toLocaleString()} entry — Winner takes all
+          </div>
+        </div>
+      )}
 
       {/* Share section */}
       <div className="bg-white rounded-2xl p-4 shadow-sm border border-amber-100">
@@ -206,6 +221,13 @@ export default function LobbyClient({ room, currentUserId, isHost, myDisplayName
           Leave Lobby
         </button>
       </div>
+
+      <ChatWindow
+        roomId={room.id}
+        currentUserId={currentUserId}
+        displayName={myDisplayName}
+        avatarId={myAvatarId}
+      />
     </div>
   )
 }

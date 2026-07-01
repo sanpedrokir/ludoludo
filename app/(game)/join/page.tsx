@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useActionState, FormEvent, useEffect } from 'react'
+import { Suspense, useState, useActionState, FormEvent, useEffect } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { lookupRoom, joinGameByCode } from '@/lib/actions/game'
 import { Color, COLORS } from '@/lib/game/types'
@@ -12,7 +12,7 @@ const COLOR_META: Record<Color, { label: string; bg: string; ring: string; text:
   yellow: { label: 'Yellow', bg: 'bg-yellow-400', ring: 'ring-yellow-300', text: 'text-yellow-700' },
 }
 
-export default function JoinPage() {
+function JoinContent() {
   const searchParams = useSearchParams()
   const defaultCode = searchParams.get('code') ?? ''
 
@@ -22,10 +22,10 @@ export default function JoinPage() {
   const [chosenColor, setChosenColor] = useState<Color | null>(null)
   const [lookupError, setLookupError] = useState<string | null>(null)
   const [looking, setLooking] = useState(false)
+  const [stakeAmount, setStakeAmount] = useState(0)
 
   const [joinState, joinAction, joinPending] = useActionState(joinGameByCode, { error: undefined })
 
-  // Auto-lookup if code came from WhatsApp link
   useEffect(() => {
     if (defaultCode && defaultCode.trim().length >= 6) {
       doLookup(defaultCode)
@@ -43,6 +43,7 @@ export default function JoinPage() {
       return
     }
     setAvailable(result.available)
+    setStakeAmount(result.stake ?? 0)
     setChosenColor(result.available.length === 1 ? result.available[0] : null)
     setStep('color')
   }
@@ -62,6 +63,15 @@ export default function JoinPage() {
           <p className="text-amber-600 text-sm">
             Code: <span className="font-black font-mono text-amber-900">{code}</span>
           </p>
+          {stakeAmount > 0 && (
+            <div className="mt-3 flex items-center gap-2 bg-amber-100 border border-amber-300 rounded-xl px-3 py-2">
+              <span className="text-lg">💰</span>
+              <div>
+                <div className="text-xs font-black text-amber-900">Stake Game — Entry: ${stakeAmount.toLocaleString()}</div>
+                <div className="text-xs text-amber-600">This amount will be deducted from your balance. Winner takes the pot.</div>
+              </div>
+            </div>
+          )}
         </div>
 
         {joinState?.error && (
@@ -117,7 +127,9 @@ export default function JoinPage() {
               {joinPending
                 ? 'Joining…'
                 : chosenColor
-                  ? `Join as ${COLOR_META[chosenColor].label} 🎲`
+                  ? stakeAmount > 0
+                    ? `Pay $${stakeAmount.toLocaleString()} & Join as ${COLOR_META[chosenColor].label}`
+                    : `Join as ${COLOR_META[chosenColor].label} 🎲`
                   : 'Choose a colour first'}
             </button>
           </form>
@@ -126,7 +138,6 @@ export default function JoinPage() {
     )
   }
 
-  // Step 1: code entry (or auto-looking up)
   return (
     <div className="px-6 py-8 flex flex-col gap-6 max-w-md mx-auto w-full">
       <div>
@@ -154,7 +165,8 @@ export default function JoinPage() {
               onChange={e => setCode(e.target.value)}
               required
               maxLength={6}
-              placeholder="829154"
+              placeholder="······"
+              autoComplete="off"
               className="w-full px-4 py-4 rounded-xl border-2 border-amber-200 focus:border-amber-500 focus:outline-none bg-white text-amber-900 placeholder:text-amber-300 text-center text-3xl font-black tracking-widest"
             />
           </div>
@@ -168,5 +180,13 @@ export default function JoinPage() {
         </form>
       )}
     </div>
+  )
+}
+
+export default function JoinPage() {
+  return (
+    <Suspense>
+      <JoinContent />
+    </Suspense>
   )
 }

@@ -53,7 +53,7 @@ export async function claimDailyReward(): Promise<EconomyResult> {
 }
 
 export async function addBalance(amount: number): Promise<void> {
-  if (amount <= 0) return
+  if (amount === 0) return
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return
@@ -66,9 +66,10 @@ export async function addBalance(amount: number): Promise<void> {
 
   if (!profile) return
 
+  const newBalance = ((profile as any).balance ?? 0) + amount
   await supabase
     .from('profiles')
-    .update({ balance: ((profile as any).balance ?? 0) + amount } as any)
+    .update({ balance: newBalance } as any)
     .eq('id', user.id)
 }
 

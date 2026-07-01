@@ -135,7 +135,7 @@ export function getValidMoves(tokens: TokenState[], color: Color, diceValue: num
     if (isDone(token)) continue
 
     if (isHome(token)) {
-      if (diceValue === 6) valid.push(token.index)
+      if (diceValue === 1 || diceValue === 6) valid.push(token.index)
       continue
     }
 
