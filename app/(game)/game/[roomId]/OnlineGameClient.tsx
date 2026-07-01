@@ -121,6 +121,29 @@ export default function OnlineGameClient({ room, initialGameState, currentUserId
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // Re-sync from DB — fallback for realtime desync (e.g. after rejoin)
+  const resyncFromDB = useCallback(async () => {
+    const { data } = await supabase
+      .from('game_states')
+      .select('*')
+      .eq('room_id', room.id)
+      .single()
+    if (!data) return
+    setGameState(prev => ({
+      ...prev,
+      currentPlayerOrder: data.current_player_order,
+      diceValue: data.dice_value,
+      phase: data.phase as GameState['phase'],
+      tokens: data.tokens,
+    }))
+  }, [room.id, supabase])
+
+  // Auto-resync every 20s as safety net against stale state
+  useEffect(() => {
+    const id = setInterval(resyncFromDB, 20_000)
+    return () => clearInterval(id)
+  }, [resyncFromDB])
+
   async function persistState(state: GameState) {
     await supabase
       .from('game_states')
@@ -465,7 +488,15 @@ export default function OnlineGameClient({ room, initialGameState, currentUserId
             </button>
           )}
           {!isMyTurn && !currentPlayer.isComputer && (
-            <span className="text-amber-500 text-sm animate-pulse">Waiting for {currentPlayer.displayName}…</span>
+            <div className="flex flex-col items-center gap-1">
+              <span className="text-amber-500 text-sm animate-pulse">Waiting for {currentPlayer.displayName}…</span>
+              <button
+                onClick={resyncFromDB}
+                className="text-[10px] text-amber-400 underline hover:text-amber-600"
+              >
+                ↻ Sync
+              </button>
+            </div>
           )}
           {currentPlayer.isComputer && (
             <span className="text-amber-500 text-sm animate-pulse">🤖 Thinking…</span>
