@@ -5,10 +5,10 @@ import { AVATARS } from '@/components/PlayerAvatar'
 
 interface Player {
   id: string
-  display_name: string
-  avatar_id?: number
+  displayName: string
+  avatarId?: number | null
   wins: number
-  games_played: number
+  gamesPlayed: number
   balance: number
 }
 
@@ -27,7 +27,7 @@ function PlayerRow({ player, rank, isMe, stat }: {
   isMe: boolean
   stat: React.ReactNode
 }) {
-  const avatar = AVATARS.find(a => a.id === (player.avatar_id ?? 1)) ?? AVATARS[0]
+  const avatar = AVATARS.find(a => a.id === (player.avatarId ?? 1)) ?? AVATARS[0]
   return (
     <div className={`flex items-center gap-3 px-4 py-3 rounded-2xl shadow-sm ${
       isMe ? 'bg-amber-100 border-2 border-amber-500' : 'bg-white border border-amber-100'
@@ -43,10 +43,10 @@ function PlayerRow({ player, rank, isMe, stat }: {
       </div>
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-1">
-          <span className="font-bold text-amber-900 truncate text-sm">{player.display_name}</span>
+          <span className="font-bold text-amber-900 truncate text-sm">{player.displayName}</span>
           {isMe && <span className="text-[10px] bg-amber-500 text-white px-1.5 py-0.5 rounded-full font-bold flex-shrink-0">You</span>}
         </div>
-        <div className="text-xs text-amber-400">{player.games_played} game{player.games_played !== 1 ? 's' : ''}</div>
+        <div className="text-xs text-amber-400">{player.gamesPlayed} game{player.gamesPlayed !== 1 ? 's' : ''}</div>
       </div>
       <div className="text-right flex-shrink-0">{stat}</div>
     </div>
@@ -102,7 +102,7 @@ export default function LeaderboardClient({ currentUserId, byWins, byBalance, in
                   <div>
                     <div className="text-sm font-black text-amber-700">{p.wins} win{p.wins !== 1 ? 's' : ''}</div>
                     <div className="text-xs text-amber-400">
-                      {p.games_played > 0 ? Math.round((p.wins / p.games_played) * 100) : 0}% rate
+                      {p.gamesPlayed > 0 ? Math.round((p.wins / p.gamesPlayed) * 100) : 0}% rate
                     </div>
                   </div>
                 }

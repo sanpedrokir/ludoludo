@@ -1,42 +1,24 @@
 'use client'
 
-import { useState, useEffect } from 'react'
-import { createClient } from '@/lib/supabase/client'
+import { useState, useEffect, useCallback } from 'react'
+import { useUser } from '@clerk/nextjs'
+import { usePusherChannel } from '@/lib/pusher/usePusherChannel'
+import { getMyBalance } from '@/lib/actions/economy'
 
 export default function InGameBalance() {
+  const { user } = useUser()
   const [balance, setBalance] = useState<number | null>(null)
 
   useEffect(() => {
-    const supabase = createClient()
-    let channelCleanup: (() => void) | undefined
+    if (!user) return
+    getMyBalance().then(setBalance)
+  }, [user])
 
-    supabase.auth.getUser().then(({ data: { user } }) => {
-      if (!user) return
-
-      // Fetch current balance
-      supabase.from('profiles').select('balance').eq('id', user.id).single()
-        .then(({ data }) => {
-          setBalance((data as any)?.balance ?? 0)
-        })
-
-      // Stay live via Realtime
-      const ch = supabase
-        .channel(`ingame-bal-${user.id}`)
-        .on(
-          'postgres_changes',
-          { event: 'UPDATE', schema: 'public', table: 'profiles', filter: `id=eq.${user.id}` },
-          (payload) => {
-            const b = (payload.new as Record<string, unknown>).balance
-            if (typeof b === 'number') setBalance(b)
-          }
-        )
-        .subscribe()
-
-      channelCleanup = () => { try { supabase.removeChannel(ch) } catch {} }
-    })
-
-    return () => channelCleanup?.()
+  const onBalanceUpdated = useCallback((payload: { balance: number }) => {
+    if (typeof payload.balance === 'number') setBalance(payload.balance)
   }, [])
+
+  usePusherChannel(user ? `profile:${user.id}` : null, [{ event: 'balance-updated', onEvent: onBalanceUpdated }])
 
   if (balance === null) return null
 

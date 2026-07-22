@@ -1,7 +1,10 @@
 import { Suspense } from 'react'
 import Link from 'next/link'
-import { createClient } from '@/lib/supabase/server'
-import { signOut } from '@/lib/actions/auth'
+import { eq, and, inArray } from 'drizzle-orm'
+import { db } from '@/lib/db'
+import { gamePlayers, gameRooms } from '@/lib/db/schema'
+import { getSessionUser } from '@/lib/auth/getUser'
+import SignOutButton from '@/components/SignOutButton'
 import LiveBalance from '@/components/LiveBalance'
 import LudoIcon from '@/components/LudoIcon'
 import RejoinBanner from '@/components/RejoinBanner'
@@ -9,36 +12,30 @@ import RejoinBanner from '@/components/RejoinBanner'
 export const dynamic = 'force-dynamic'
 
 export default async function GameLayout({ children }: { children: React.ReactNode }) {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-
-  const { data: profile } = user
-    ? await supabase.from('profiles').select('*').eq('id', user.id).single()
-    : { data: null }
-
-  const balance: number = (profile as any)?.balance ?? 0
+  const session = await getSessionUser()
+  const balance = session?.profile.balance ?? 0
 
   // Find any in-progress game the user is still an active player in
-  const { data: playerRooms } = user
-    ? await supabase
-        .from('game_players')
-        .select('room_id')
-        .eq('player_id', user.id)
-        .eq('is_computer', false)
-        .eq('status', 'active')
-    : { data: null }
+  const playerRooms = session
+    ? await db
+        .select({ roomId: gamePlayers.roomId })
+        .from(gamePlayers)
+        .where(and(
+          eq(gamePlayers.playerId, session.id),
+          eq(gamePlayers.isComputer, false),
+          eq(gamePlayers.status, 'active'),
+        ))
+    : []
 
-  const roomIds = (playerRooms ?? []).map((p: { room_id: string }) => p.room_id)
+  const roomIds = playerRooms.map((p) => p.roomId)
 
-  const { data: activeGame } = roomIds.length > 0
-    ? await supabase
-        .from('game_rooms')
-        .select('id')
-        .eq('status', 'playing')
-        .in('id', roomIds)
+  const [activeGame] = roomIds.length > 0
+    ? await db
+        .select({ id: gameRooms.id })
+        .from(gameRooms)
+        .where(and(eq(gameRooms.status, 'playing'), inArray(gameRooms.id, roomIds)))
         .limit(1)
-        .maybeSingle()
-    : { data: null }
+    : []
 
   return (
     <div className="flex flex-col min-h-full">
@@ -47,19 +44,15 @@ export default async function GameLayout({ children }: { children: React.ReactNo
           <LudoIcon size={28} />
           LudoLudo
         </Link>
-        {profile && user && (
+        {session && (
           <div className="flex items-center gap-3">
             <Link href="/shop" className="flex items-center gap-1 bg-amber-700/60 px-2.5 py-1 rounded-full hover:bg-amber-700/80 transition-colors">
               <span className="text-xs">💰</span>
               <Suspense fallback={<span className="text-xs font-black">${balance.toLocaleString()}</span>}>
-                <LiveBalance userId={user.id} initial={balance} className="text-xs font-black" channel="layout" />
+                <LiveBalance userId={session.id} initial={balance} className="text-xs font-black" channel="layout" />
               </Suspense>
             </Link>
-            <form action={signOut}>
-              <button type="submit" className="text-xs text-amber-200 hover:text-white">
-                Sign out
-              </button>
-            </form>
+            <SignOutButton />
           </div>
         )}
       </header>

@@ -1,8 +1,8 @@
 'use client'
 
-import { useEffect, useState, useRef, useMemo } from 'react'
+import { useState, useRef, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
-import { createClient } from '@/lib/supabase/client'
+import { usePusherChannel } from '@/lib/pusher/usePusherChannel'
 import { startGame, leaveRoom } from '@/lib/actions/game'
 import { Color } from '@/lib/game/types'
 import ChatWindow from '@/components/ChatWindow'
@@ -16,79 +16,65 @@ const COLOR_CLASS: Record<Color, string> = {
 
 interface Player {
   id: string
-  player_id?: string | null
+  playerId?: string | null
   color: Color
-  is_computer: boolean
+  isComputer: boolean
   status: string
-  profiles?: { display_name: string; avatar_id: number } | null
+  profile?: { displayName: string; avatarId: number } | null
 }
 
 interface Room {
   id: string
-  room_code: string
+  roomCode: string
   name: string | null
-  host_id: string
-  max_players: number
+  hostId: string
+  maxPlayers: number
   status: string
   stake: number
-  game_players: Player[]
+  gamePlayers: Player[]
 }
 
 interface Props {
   room: Room
   currentUserId: string
   isHost: boolean
-  myDisplayName: string
-  myAvatarId: number
 }
 
-export default function LobbyClient({ room, currentUserId, isHost, myDisplayName, myAvatarId }: Props) {
+export default function LobbyClient({ room, currentUserId, isHost }: Props) {
   const router = useRouter()
-  const supabase = useMemo(() => createClient(), [])
 
-  const [players, setPlayers] = useState<Player[]>(room.game_players)
+  const [players, setPlayers] = useState<Player[]>(room.gamePlayers)
   const [starting, setStarting] = useState(false)
   const [joinNotif, setJoinNotif] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
-  const prevPlayerIdsRef = useRef(new Set(room.game_players.map(p => p.player_id)))
+  const prevPlayerIdsRef = useRef(new Set(room.gamePlayers.map(p => p.playerId)))
 
-  useEffect(() => {
-    const channel = supabase
-      .channel(`lobby:${room.id}`)
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'game_players', filter: `room_id=eq.${room.id}` },
-        () => {
-          supabase
-            .from('game_players')
-            .select('*, profiles(display_name, avatar_id)')
-            .eq('room_id', room.id)
-            .then(({ data }) => {
-              if (!data) return
-              const newPlayer = data.find(
-                p => !p.is_computer && !prevPlayerIdsRef.current.has(p.player_id)
-              )
-              if (newPlayer) {
-                const name = newPlayer.profiles?.display_name ?? 'Someone'
-                setJoinNotif(`${name} has joined! 🎉`)
-                setTimeout(() => setJoinNotif(null), 4000)
-              }
-              prevPlayerIdsRef.current = new Set(data.map((p: Player) => p.player_id))
-              setPlayers(data as Player[])
-            })
-        }
-      )
-      .on(
-        'postgres_changes',
-        { event: 'UPDATE', schema: 'public', table: 'game_rooms', filter: `id=eq.${room.id}` },
-        (payload) => {
-          if (payload.new.status === 'playing') router.push(`/game/${room.id}`)
-        }
-      )
-      .subscribe()
+  const onPlayerJoined = useCallback((data: Player[]) => {
+    const newPlayer = data.find(p => !p.isComputer && !prevPlayerIdsRef.current.has(p.playerId))
+    if (newPlayer) {
+      const name = newPlayer.profile?.displayName ?? 'Someone'
+      setJoinNotif(`${name} has joined! 🎉`)
+      setTimeout(() => setJoinNotif(null), 4000)
+    }
+    prevPlayerIdsRef.current = new Set(data.map(p => p.playerId))
+    setPlayers(data)
+  }, [])
 
-    return () => { supabase.removeChannel(channel) }
-  }, [room.id, router, supabase])
+  const onPlayerForfeited = useCallback((payload: { playerId: string }) => {
+    setPlayers(prev => prev.map(p => p.playerId === payload.playerId ? { ...p, status: 'forfeited' } : p))
+  }, [])
+
+  usePusherChannel(`game_players:${room.id}`, [
+    { event: 'player-joined', onEvent: onPlayerJoined },
+    { event: 'player-forfeited', onEvent: onPlayerForfeited },
+  ])
+
+  const onStatusChanged = useCallback((payload: { status: string }) => {
+    if (payload.status === 'playing') router.push(`/game/${room.id}`)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [room.id])
+
+  usePusherChannel(`game_rooms:${room.id}`, [{ event: 'status-changed', onEvent: onStatusChanged }])
 
   async function handleStart() {
     setStarting(true)
@@ -100,21 +86,21 @@ export default function LobbyClient({ room, currentUserId, isHost, myDisplayName
   }
 
   function handleShareWhatsApp() {
-    const joinUrl = `${window.location.origin}/join?code=${room.room_code}`
+    const joinUrl = `${window.location.origin}/join?code=${room.roomCode}`
     const text = encodeURIComponent(
-      `🎲 Join my LudoLudo game!\nCode: *${room.room_code}*\nClick to join: ${joinUrl}`
+      `🎲 Join my LudoLudo game!\nCode: *${room.roomCode}*\nClick to join: ${joinUrl}`
     )
     window.open(`https://wa.me/?text=${text}`, '_blank')
   }
 
   async function handleCopyLink() {
-    const joinUrl = `${window.location.origin}/join?code=${room.room_code}`
+    const joinUrl = `${window.location.origin}/join?code=${room.roomCode}`
     await navigator.clipboard.writeText(joinUrl)
     setCopied(true)
     setTimeout(() => setCopied(false), 2500)
   }
 
-  const humanPlayers = players.filter(p => !p.is_computer)
+  const humanPlayers = players.filter(p => !p.isComputer)
   const canStart = isHost && humanPlayers.length >= 2
   const pot = (room.stake ?? 0) * humanPlayers.length
 
@@ -130,7 +116,7 @@ export default function LobbyClient({ room, currentUserId, isHost, myDisplayName
       <div>
         <h2 className="text-2xl font-black text-amber-900">{room.name ?? 'Game Lobby'}</h2>
         <p className="text-amber-500 text-sm mt-0.5">
-          Code: <span className="font-mono font-black text-amber-900 text-xl tracking-widest">{room.room_code}</span>
+          Code: <span className="font-mono font-black text-amber-900 text-xl tracking-widest">{room.roomCode}</span>
         </p>
       </div>
 
@@ -168,17 +154,17 @@ export default function LobbyClient({ room, currentUserId, isHost, myDisplayName
 
       {/* Player slots */}
       <div className="flex flex-col gap-2">
-        {players.slice(0, room.max_players).map((player) => (
+        {players.slice(0, room.maxPlayers).map((player) => (
           <div key={player.id} className="flex items-center gap-3 bg-white rounded-xl p-3 shadow-sm">
             <span className={`w-9 h-9 rounded-full ${COLOR_CLASS[player.color]} flex items-center justify-center text-white text-sm font-bold`}>
-              {player.is_computer ? '🤖' : player.profiles?.display_name?.[0]?.toUpperCase() ?? '?'}
+              {player.isComputer ? '🤖' : player.profile?.displayName?.[0]?.toUpperCase() ?? '?'}
             </span>
             <div className="flex-1">
               <div className="font-semibold text-amber-900 text-sm">
-                {player.is_computer
+                {player.isComputer
                   ? 'Computer Player'
-                  : player.profiles?.display_name ?? 'Unknown'}
-                {!player.is_computer && player.player_id === room.host_id && (
+                  : player.profile?.displayName ?? 'Unknown'}
+                {!player.isComputer && player.playerId === room.hostId && (
                   <span className="ml-2 text-xs text-amber-500">(Host)</span>
                 )}
               </div>
@@ -187,7 +173,7 @@ export default function LobbyClient({ room, currentUserId, isHost, myDisplayName
             <span className="text-green-500 text-sm">●</span>
           </div>
         ))}
-        {Array.from({ length: Math.max(0, room.max_players - players.length) }).map((_, i) => (
+        {Array.from({ length: Math.max(0, room.maxPlayers - players.length) }).map((_, i) => (
           <div key={`empty-${i}`} className="flex items-center gap-3 bg-white/50 rounded-xl p-3 border-2 border-dashed border-amber-200">
             <span className="w-9 h-9 rounded-full bg-amber-100 flex items-center justify-center text-amber-400 text-lg">?</span>
             <span className="text-sm text-amber-400">Waiting for player…</span>
@@ -222,12 +208,7 @@ export default function LobbyClient({ room, currentUserId, isHost, myDisplayName
         </button>
       </div>
 
-      <ChatWindow
-        roomId={room.id}
-        currentUserId={currentUserId}
-        displayName={myDisplayName}
-        avatarId={myAvatarId}
-      />
+      <ChatWindow roomId={room.id} currentUserId={currentUserId} />
     </div>
   )
 }

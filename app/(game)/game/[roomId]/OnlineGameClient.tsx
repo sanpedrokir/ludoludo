@@ -1,14 +1,14 @@
 'use client'
 
-import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import LudoBoard from '@/components/board/LudoBoard'
 import BoardScaler from '@/components/board/BoardScaler'
-import { createClient } from '@/lib/supabase/client'
+import { usePusherChannel } from '@/lib/pusher/usePusherChannel'
 import { getValidMoves, applyMove, nextPlayer, isGameFinished, assignRank, countDoneTokens } from '@/lib/game/engine'
 import { chooseComputerMove, rollDice } from '@/lib/game/ai'
 import { Color, TokenState, GameState, PlayerState } from '@/lib/game/types'
-import { leaveRoom, recordOnlineGameResult } from '@/lib/actions/game'
+import { leaveRoom, recordOnlineGameResult, updateGameState, finishGame, getGameState } from '@/lib/actions/game'
 import { addBalance } from '@/lib/actions/economy'
 import { playCashSound } from '@/lib/sounds'
 import PlayerAvatar from '@/components/PlayerAvatar'
@@ -19,59 +19,58 @@ const RANK_LABELS = ['🥇 1st', '🥈 2nd', '🥉 3rd', '4th']
 
 interface DbGameState {
   id: string
-  room_id: string
-  current_player_order: number
-  dice_value: number | null
+  roomId: string
+  currentPlayerOrder: number
+  diceValue: number | null
   phase: string
   tokens: TokenState[]
-  updated_at: string
+  updatedAt: string | Date
 }
 
 interface DbPlayer {
   id: string
   color: Color
-  is_computer: boolean
-  difficulty?: string
-  turn_order: number
-  player_id?: string
+  isComputer: boolean
+  difficulty?: string | null
+  turnOrder: number
+  playerId?: string | null
   status: string
-  profiles?: { display_name: string; avatar_id?: number } | null
+  profile?: { displayName: string; avatarId?: number } | null
 }
 
 interface Props {
-  room: { id: string; game_players: DbPlayer[] }
+  room: { id: string; gamePlayers: DbPlayer[] }
   initialGameState: DbGameState
   currentUserId: string
   myColor: Color | null
-  myDisplayName: string
+  initialBalance: number
   pot: number
 }
 
 function dbToGameState(db: DbGameState, players: PlayerState[]): GameState {
   return {
-    roomId: db.room_id,
+    roomId: db.roomId,
     players,
     tokens: db.tokens,
-    currentPlayerOrder: db.current_player_order,
-    diceValue: db.dice_value,
+    currentPlayerOrder: db.currentPlayerOrder,
+    diceValue: db.diceValue,
     phase: db.phase as GameState['phase'],
   }
 }
 
-export default function OnlineGameClient({ room, initialGameState, currentUserId, myColor, myDisplayName, pot }: Props) {
+export default function OnlineGameClient({ room, initialGameState, currentUserId, myColor, initialBalance, pot }: Props) {
   const router = useRouter()
-  const supabase = useMemo(() => createClient(), [])
 
-  const players: PlayerState[] = room.game_players
-    .sort((a, b) => a.turn_order - b.turn_order || a.color.localeCompare(b.color))
+  const players: PlayerState[] = room.gamePlayers
+    .sort((a, b) => a.turnOrder - b.turnOrder || a.color.localeCompare(b.color))
     .map(p => ({
       color: p.color,
-      isComputer: p.is_computer,
+      isComputer: p.isComputer,
       difficulty: p.difficulty as PlayerState['difficulty'],
-      turnOrder: p.turn_order,
-      playerId: p.player_id,
-      displayName: p.is_computer ? 'CPU' : (p.profiles?.display_name ?? 'Player'),
-      avatarId: p.profiles?.avatar_id ?? 1,
+      turnOrder: p.turnOrder,
+      playerId: p.playerId ?? undefined,
+      displayName: p.isComputer ? 'CPU' : (p.profile?.displayName ?? 'Player'),
+      avatarId: p.profile?.avatarId ?? 1,
       tokensDone: 0,
       capturesMade: 0,
       status: p.status as PlayerState['status'],
@@ -85,7 +84,7 @@ export default function OnlineGameClient({ room, initialGameState, currentUserId
   )
   const [turnTimer, setTurnTimer] = useState(30)
   const [earnNotif, setEarnNotif] = useState<{ amount: number; label: string } | null>(null)
-  const [balance, setBalance] = useState(0)
+  const [balance, setBalance] = useState(initialBalance)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const aiTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const resultSubmittedRef = useRef(false)
@@ -113,30 +112,18 @@ export default function OnlineGameClient({ room, initialGameState, currentUserId
     addBalance(-amount).catch(console.error)
   }
 
-  // Fetch initial balance on mount
-  useEffect(() => {
-    const supabase = createClient()
-    supabase.from('profiles').select('balance').eq('id', currentUserId).single()
-      .then(({ data }) => setBalance((data as any)?.balance ?? 0))
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
   // Re-sync from DB — fallback for realtime desync (e.g. after rejoin)
   const resyncFromDB = useCallback(async () => {
-    const { data } = await supabase
-      .from('game_states')
-      .select('*')
-      .eq('room_id', room.id)
-      .single()
+    const data = await getGameState(room.id)
     if (!data) return
     setGameState(prev => ({
       ...prev,
-      currentPlayerOrder: data.current_player_order,
-      diceValue: data.dice_value,
+      currentPlayerOrder: data.currentPlayerOrder,
+      diceValue: data.diceValue,
       phase: data.phase as GameState['phase'],
-      tokens: data.tokens,
+      tokens: data.tokens as TokenState[],
     }))
-  }, [room.id, supabase])
+  }, [room.id])
 
   // Auto-resync every 20s as safety net against stale state
   useEffect(() => {
@@ -145,16 +132,12 @@ export default function OnlineGameClient({ room, initialGameState, currentUserId
   }, [resyncFromDB])
 
   async function persistState(state: GameState) {
-    await supabase
-      .from('game_states')
-      .update({
-        current_player_order: state.currentPlayerOrder,
-        dice_value: state.diceValue,
-        phase: state.phase,
-        tokens: state.tokens,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('room_id', room.id)
+    await updateGameState(room.id, {
+      currentPlayerOrder: state.currentPlayerOrder,
+      diceValue: state.diceValue,
+      phase: state.phase,
+      tokens: state.tokens,
+    })
   }
 
   // Record result once on game end
@@ -174,58 +157,40 @@ export default function OnlineGameClient({ room, initialGameState, currentUserId
   }, [isFinished])
 
   // Realtime game state
-  useEffect(() => {
-    const channel = supabase
-      .channel(`game:${room.id}`)
-      .on(
-        'postgres_changes',
-        { event: 'UPDATE', schema: 'public', table: 'game_states', filter: `room_id=eq.${room.id}` },
-        (payload) => {
-          const db = payload.new as DbGameState
-          setGameState(prev => {
-            // Detect if opponent captured one of my tokens (went from main track to base)
-            if (myColor) {
-              const myPrevOnTrack = prev.tokens.filter(t => t.color === myColor && t.position >= 0 && t.position <= 51)
-              const myNewOnTrack = (db.tokens as TokenState[]).filter(t => t.color === myColor && t.position >= 0 && t.position <= 51)
-              if (myNewOnTrack.length < myPrevOnTrack.length) {
-                setTimeout(() => deductCash(500, '💀 Token sent back!'), 0)
-              }
-            }
-            return {
-              ...prev,
-              currentPlayerOrder: db.current_player_order,
-              diceValue: db.dice_value,
-              phase: db.phase as GameState['phase'],
-              tokens: db.tokens,
-            }
-          })
+  const onStateUpdated = useCallback((db: DbGameState) => {
+    setGameState(prev => {
+      // Detect if opponent captured one of my tokens (went from main track to base)
+      if (myColor) {
+        const myPrevOnTrack = prev.tokens.filter(t => t.color === myColor && t.position >= 0 && t.position <= 51)
+        const myNewOnTrack = (db.tokens as TokenState[]).filter(t => t.color === myColor && t.position >= 0 && t.position <= 51)
+        if (myNewOnTrack.length < myPrevOnTrack.length) {
+          setTimeout(() => deductCash(500, '💀 Token sent back!'), 0)
         }
-      )
-      .subscribe()
-    return () => { supabase.removeChannel(channel) }
-  }, [room.id, supabase])
+      }
+      return {
+        ...prev,
+        currentPlayerOrder: db.currentPlayerOrder,
+        diceValue: db.diceValue,
+        phase: db.phase as GameState['phase'],
+        tokens: db.tokens,
+      }
+    })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [myColor])
+
+  usePusherChannel(`game_states:${room.id}`, [{ event: 'state-updated', onEvent: onStateUpdated }])
 
   // Forfeit detection
-  useEffect(() => {
-    const channel = supabase
-      .channel(`game-players:${room.id}`)
-      .on(
-        'postgres_changes',
-        { event: 'UPDATE', schema: 'public', table: 'game_players', filter: `room_id=eq.${room.id}` },
-        (payload) => {
-          const updated = payload.new as { player_id: string; status: string }
-          if (updated.status !== 'forfeited') return
-          setGameState(prev => ({
-            ...prev,
-            players: prev.players.map(p =>
-              p.playerId === updated.player_id ? { ...p, status: 'forfeited' as const } : p
-            ),
-          }))
-        }
-      )
-      .subscribe()
-    return () => { supabase.removeChannel(channel) }
-  }, [room.id, supabase])
+  const onPlayerForfeited = useCallback((payload: { playerId: string }) => {
+    setGameState(prev => ({
+      ...prev,
+      players: prev.players.map(p =>
+        p.playerId === payload.playerId ? { ...p, status: 'forfeited' as const } : p
+      ),
+    }))
+  }, [])
+
+  usePusherChannel(`game_players:${room.id}`, [{ event: 'player-forfeited', onEvent: onPlayerForfeited }])
 
   // Turn timer
   useEffect(() => {
@@ -251,7 +216,7 @@ export default function OnlineGameClient({ room, initialGameState, currentUserId
 
   const handleAiTurn = useCallback(() => {
     if (!currentPlayer?.isComputer || isFinished) return
-    const isHost = room.game_players.find(p => !p.is_computer)?.player_id === currentUserId
+    const isHost = room.gamePlayers.find(p => !p.isComputer)?.playerId === currentUserId
     if (!isHost) return
 
     if (gameState.phase === 'roll') {
@@ -286,7 +251,7 @@ export default function OnlineGameClient({ room, initialGameState, currentUserId
         await persistState(newState)
       }, 700)
     }
-  }, [currentPlayer, gameState, isFinished, currentUserId, room.game_players])
+  }, [currentPlayer, gameState, isFinished, currentUserId, room.gamePlayers])
 
   useEffect(() => {
     if (aiTimerRef.current) clearTimeout(aiTimerRef.current)
@@ -362,7 +327,7 @@ export default function OnlineGameClient({ room, initialGameState, currentUserId
     await persistState(finalState)
 
     if (finished) {
-      await supabase.from('game_rooms').update({ status: 'finished', finished_at: new Date().toISOString() }).eq('id', room.id)
+      await finishGame(room.id)
     }
   }
 
@@ -522,12 +487,7 @@ export default function OnlineGameClient({ room, initialGameState, currentUserId
       </button>
 
       {myColor && (
-        <ChatWindow
-          roomId={room.id}
-          currentUserId={currentUserId}
-          displayName={myDisplayName}
-          avatarId={players.find(p => p.color === myColor)?.avatarId ?? 1}
-        />
+        <ChatWindow roomId={room.id} currentUserId={currentUserId} />
       )}
     </div>
   )

@@ -1,3 +1,7 @@
+-- STALE / ABANDONED: the app migrated off Supabase to Neon + Drizzle.
+-- See lib/db/schema.ts for the current schema. Kept only as historical
+-- reference for the pre-migration Postgres/RLS shape.
+--
 -- Run this in the Supabase SQL Editor to set up the LudoLudo schema.
 
 -- Profiles (extends auth.users, created automatically on signup)

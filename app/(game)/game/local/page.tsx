@@ -2,6 +2,7 @@
 
 import { Suspense, useEffect, useReducer, useCallback, useRef, useState } from 'react'
 import { useSearchParams, useRouter } from 'next/navigation'
+import { useUser } from '@clerk/nextjs'
 import LudoBoard from '@/components/board/LudoBoard'
 import BoardScaler from '@/components/board/BoardScaler'
 import {
@@ -16,9 +17,9 @@ import {
 } from '@/lib/game/engine'
 import { chooseComputerMove, rollDice } from '@/lib/game/ai'
 import { Color, Difficulty, GameState } from '@/lib/game/types'
-import { addBalance } from '@/lib/actions/economy'
+import { addBalance, getMyBalanceAndAvatar } from '@/lib/actions/economy'
 import { playCashSound } from '@/lib/sounds'
-import { createClient } from '@/lib/supabase/client'
+import { usePusherChannel } from '@/lib/pusher/usePusherChannel'
 import PlayerAvatar from '@/components/PlayerAvatar'
 import { isOnMainTrack } from '@/lib/game/engine'
 
@@ -99,6 +100,7 @@ function LocalGameContent() {
     }
   )
 
+  const { user } = useUser()
   const [earnNotif, setEarnNotif] = useState<{ amount: number; label: string } | null>(null)
   const [balance, setBalance] = useState<number>(0)
   const [myAvatarId, setMyAvatarId] = useState<number>(1)
@@ -107,26 +109,18 @@ function LocalGameContent() {
 
   // Fetch balance on mount and keep live
   useEffect(() => {
-    const supabase = createClient()
-    let cleanup: (() => void) | undefined
-    supabase.auth.getUser().then(({ data: { user } }) => {
-      if (!user) return
-      supabase.from('profiles').select('balance, avatar_id').eq('id', user.id).single()
-        .then(({ data }) => {
-          setBalance((data as any)?.balance ?? 0)
-          setMyAvatarId((data as any)?.avatar_id ?? 1)
-        })
-      const ch = supabase.channel(`local-bal-${user.id}`)
-        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'profiles', filter: `id=eq.${user.id}` },
-          (payload) => {
-            const b = (payload.new as Record<string, unknown>).balance
-            if (typeof b === 'number') setBalance(b)
-          })
-        .subscribe()
-      cleanup = () => { try { supabase.removeChannel(ch) } catch {} }
+    if (!user) return
+    getMyBalanceAndAvatar().then(({ balance, avatarId }) => {
+      setBalance(balance)
+      setMyAvatarId(avatarId)
     })
-    return () => cleanup?.()
+  }, [user])
+
+  const onBalanceUpdated = useCallback((payload: { balance: number }) => {
+    if (typeof payload.balance === 'number') setBalance(payload.balance)
   }, [])
+
+  usePusherChannel(user ? `profile:${user.id}` : null, [{ event: 'balance-updated', onEvent: onBalanceUpdated }])
 
   const currentPlayer = state.players[state.currentPlayerOrder]
   const isMyTurn = currentPlayer?.color === myColor

@@ -1,35 +1,36 @@
 'use server'
 
-import { createClient } from '@/lib/supabase/server'
 import { revalidatePath } from 'next/cache'
+import { eq, sql } from 'drizzle-orm'
+import { db } from '@/lib/db'
+import { profiles, purchases } from '@/lib/db/schema'
+import { getSessionUser } from '@/lib/auth/getUser'
+import { pusherServer } from '@/lib/pusher/server'
 
 export async function buyItem(itemId: string, price: number): Promise<{ error?: string; success?: boolean }> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { error: 'Not authenticated' }
+  const session = await getSessionUser()
+  if (!session) return { error: 'Not authenticated' }
 
-  const { data: profile } = await supabase.from('profiles').select('balance').eq('id', user.id).single()
-  const balance = (profile as any)?.balance ?? 0
-  if (balance < price) return { error: `Insufficient balance — you need $${price.toLocaleString()}, you have $${balance.toLocaleString()}` }
+  if (session.profile.balance < price) {
+    return { error: `Insufficient balance — you need $${price.toLocaleString()}, you have $${session.profile.balance.toLocaleString()}` }
+  }
 
-  const { data: existing } = await supabase
-    .from('purchases')
-    .select('id')
-    .eq('user_id', user.id)
-    .eq('item_id', itemId)
-    .maybeSingle()
+  const [existing] = await db
+    .select({ id: purchases.id })
+    .from(purchases)
+    .where(sql`${purchases.userId} = ${session.id} and ${purchases.itemId} = ${itemId}`)
+    .limit(1)
   if (existing) return { error: 'Already owned' }
 
-  const { error: updateError } = await supabase
-    .from('profiles')
-    .update({ balance: balance - price } as any)
-    .eq('id', user.id)
-  if (updateError) return { error: updateError.message }
+  const [updated] = await db
+    .update(profiles)
+    .set({ balance: sql`${profiles.balance} - ${price}` })
+    .where(eq(profiles.id, session.id))
+    .returning({ balance: profiles.balance })
 
-  const { error: purchaseError } = await supabase
-    .from('purchases')
-    .insert({ user_id: user.id, item_id: itemId })
-  if (purchaseError) return { error: purchaseError.message }
+  await db.insert(purchases).values({ userId: session.id, itemId })
+
+  if (updated) await pusherServer.trigger(`profile:${session.id}`, 'balance-updated', { balance: updated.balance })
 
   revalidatePath('/shop')
   return { success: true }

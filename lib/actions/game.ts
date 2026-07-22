@@ -2,8 +2,11 @@
 
 import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
-import { createClient } from '@/lib/supabase/server'
-import { createAdminClient } from '@/lib/supabase/admin'
+import { eq, and, asc, count, sql } from 'drizzle-orm'
+import { db } from '@/lib/db'
+import { gameRooms, gamePlayers, gameStates, gameHistory, invitations, profiles } from '@/lib/db/schema'
+import { getSessionUser, getSessionUserId } from '@/lib/auth/getUser'
+import { pusherServer } from '@/lib/pusher/server'
 import { generateRoomCode, buildInitialTokens } from '@/lib/game/engine'
 import { Color, COLORS } from '@/lib/game/types'
 
@@ -17,9 +20,8 @@ type ActionResult = {
 const STAKE_AMOUNT = 250_000
 
 export async function createGameRoom(_prev: ActionResult, formData: FormData): Promise<ActionResult> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { error: 'Not authenticated' }
+  const session = await getSessionUser()
+  if (!session) return { error: 'Not authenticated' }
 
   const maxPlayers = parseInt(formData.get('maxPlayers') as string) || 4
   const name = (formData.get('name') as string) || null
@@ -27,50 +29,44 @@ export async function createGameRoom(_prev: ActionResult, formData: FormData): P
   const hostColor = (formData.get('hostColor') as Color) || 'red'
   const isStakeGame = formData.get('isStakeGame') === 'true'
 
-  if (isStakeGame) {
-    const { data: profile } = await supabase.from('profiles').select('balance').eq('id', user.id).single()
-    const balance = (profile as any)?.balance ?? 0
-    if (balance < STAKE_AMOUNT) {
-      return { error: `You need $${STAKE_AMOUNT.toLocaleString()} to create a stake game. Your balance: $${balance.toLocaleString()}` }
+  if (isStakeGame && session.profile.balance < STAKE_AMOUNT) {
+    return {
+      error: `You need $${STAKE_AMOUNT.toLocaleString()} to create a stake game. Your balance: $${session.profile.balance.toLocaleString()}`,
     }
   }
 
   const roomCode = generateRoomCode()
 
-  const { data: room, error: roomError } = await supabase
-    .from('game_rooms')
-    .insert({
-      room_code: roomCode,
+  const [room] = await db
+    .insert(gameRooms)
+    .values({
+      roomCode,
       name,
-      host_id: user.id,
-      max_players: maxPlayers,
-      fill_with_computers: fillWithComputers,
+      hostId: session.id,
+      maxPlayers,
+      fillWithComputers,
       mode: 'online',
       status: 'waiting',
       stake: isStakeGame ? STAKE_AMOUNT : 0,
     })
-    .select()
-    .single()
+    .returning()
 
-  if (roomError || !room) return { error: roomError?.message ?? 'Failed to create room' }
+  if (!room) return { error: 'Failed to create room' }
 
-  const { error: playerError } = await supabase
-    .from('game_players')
-    .insert({
-      room_id: room.id,
-      player_id: user.id,
-      color: hostColor,
-      is_computer: false,
-      turn_order: 0,
-      status: 'active',
-    })
+  await db.insert(gamePlayers).values({
+    roomId: room.id,
+    playerId: session.id,
+    color: hostColor,
+    isComputer: false,
+    turnOrder: 0,
+    status: 'active',
+  })
 
-  if (playerError) return { error: playerError.message }
-
-  // Deduct stake from host after room + player created
   if (isStakeGame) {
-    const { data: profile } = await supabase.from('profiles').select('balance').eq('id', user.id).single()
-    await supabase.from('profiles').update({ balance: ((profile as any)?.balance ?? 0) - STAKE_AMOUNT } as any).eq('id', user.id)
+    await db
+      .update(profiles)
+      .set({ balance: sql`${profiles.balance} - ${STAKE_AMOUNT}` })
+      .where(eq(profiles.id, session.id))
   }
 
   redirect(`/lobby/${room.id}`)
@@ -79,211 +75,186 @@ export async function createGameRoom(_prev: ActionResult, formData: FormData): P
 export async function lookupRoom(code: string): Promise<
   { available: Color[]; takenColors: Color[]; roomId: string; stake: number } | { error: string }
 > {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { error: 'Not authenticated' }
+  const userId = await getSessionUserId()
+  if (!userId) return { error: 'Not authenticated' }
 
-  const { data: room, error } = await supabase
-    .from('game_rooms')
-    .select('*, game_players(*)')
-    .eq('room_code', code.trim().toUpperCase())
-    .single()
+  const room = await db.query.gameRooms.findFirst({
+    where: eq(gameRooms.roomCode, code.trim().toUpperCase()),
+    with: { gamePlayers: true },
+  })
 
-  if (error || !room) return { error: 'Game room not found.' }
+  if (!room) return { error: 'Game room not found.' }
   if (room.status === 'playing') return { error: 'This game has already started.' }
   if (room.status === 'finished') return { error: 'This game has already ended.' }
 
-  const humanPlayers = room.game_players.filter((p: { is_computer: boolean }) => !p.is_computer)
-  const alreadyJoined = humanPlayers.some((p: { player_id: string }) => p.player_id === user.id)
+  const humanPlayers = room.gamePlayers.filter((p) => !p.isComputer)
+  const alreadyJoined = humanPlayers.some((p) => p.playerId === userId)
   if (alreadyJoined) redirect(`/lobby/${room.id}`)
 
-  if (humanPlayers.length >= room.max_players) return { error: 'This game room is full.' }
+  if (humanPlayers.length >= room.maxPlayers) return { error: 'This game room is full.' }
 
-  const takenColors = room.game_players.map((p: { color: string }) => p.color) as Color[]
-  const available = COLORS.filter(c => !takenColors.includes(c))
+  const takenColors = room.gamePlayers.map((p) => p.color) as Color[]
+  const available = COLORS.filter((c) => !takenColors.includes(c))
   if (available.length === 0) return { error: 'No colour slots available.' }
 
-  return { available, takenColors, roomId: room.id, stake: (room as any).stake ?? 0 }
+  return { available, takenColors, roomId: room.id, stake: room.stake }
 }
 
 export async function joinGameByCode(_prev: ActionResult, formData: FormData): Promise<ActionResult> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { error: 'Not authenticated' }
+  const session = await getSessionUser()
+  if (!session) return { error: 'Not authenticated' }
 
   const code = (formData.get('code') as string).trim().toUpperCase()
   const chosenColor = formData.get('color') as Color | null
 
-  const { data: room, error } = await supabase
-    .from('game_rooms')
-    .select('*, game_players(*)')
-    .eq('room_code', code)
-    .single()
+  const room = await db.query.gameRooms.findFirst({
+    where: eq(gameRooms.roomCode, code),
+    with: { gamePlayers: true },
+  })
 
-  if (error || !room) return { error: 'Game room not found.' }
+  if (!room) return { error: 'Game room not found.' }
   if (room.status === 'playing') return { error: 'This game has already started.' }
   if (room.status === 'finished') return { error: 'This game has already ended.' }
 
-  const humanPlayers = room.game_players.filter((p: { is_computer: boolean }) => !p.is_computer)
-  if (humanPlayers.length >= room.max_players) return { error: 'This game room is full.' }
+  const humanPlayers = room.gamePlayers.filter((p) => !p.isComputer)
+  if (humanPlayers.length >= room.maxPlayers) return { error: 'This game room is full.' }
 
-  const alreadyJoined = humanPlayers.some((p: { player_id: string }) => p.player_id === user.id)
+  const alreadyJoined = humanPlayers.some((p) => p.playerId === session.id)
   if (alreadyJoined) redirect(`/lobby/${room.id}`)
 
-  const takenColors = new Set(room.game_players.map((p: { color: string }) => p.color))
+  const takenColors = new Set(room.gamePlayers.map((p) => p.color))
   if (chosenColor && takenColors.has(chosenColor)) return { error: 'That colour was just taken. Please pick another.' }
 
-  const colorToUse = (chosenColor && !takenColors.has(chosenColor))
+  const colorToUse = chosenColor && !takenColors.has(chosenColor)
     ? chosenColor
-    : COLORS.find(c => !takenColors.has(c))
+    : COLORS.find((c) => !takenColors.has(c))
   if (!colorToUse) return { error: 'No colour slots available.' }
 
-  const stakeAmount = (room as any).stake ?? 0
-  if (stakeAmount > 0) {
-    const { data: profile } = await supabase.from('profiles').select('balance').eq('id', user.id).single()
-    const balance = (profile as any)?.balance ?? 0
-    if (balance < stakeAmount) {
-      return { error: `This is a stake game. Entry fee: $${stakeAmount.toLocaleString()}. Your balance: $${balance.toLocaleString()}` }
-    }
+  const stakeAmount = room.stake
+  if (stakeAmount > 0 && session.profile.balance < stakeAmount) {
+    return { error: `This is a stake game. Entry fee: $${stakeAmount.toLocaleString()}. Your balance: $${session.profile.balance.toLocaleString()}` }
   }
 
-  const maxTurnOrder = room.game_players.reduce(
-    (max: number, p: { turn_order: number }) => Math.max(max, p.turn_order), -1
-  )
+  const maxTurnOrder = room.gamePlayers.reduce((max, p) => Math.max(max, p.turnOrder), -1)
   const turnOrder = maxTurnOrder + 1
 
-  const { error: joinError } = await supabase
-    .from('game_players')
-    .insert({
-      room_id: room.id,
-      player_id: user.id,
-      color: colorToUse,
-      is_computer: false,
-      turn_order: turnOrder,
-      status: 'active',
-    })
+  await db.insert(gamePlayers).values({
+    roomId: room.id,
+    playerId: session.id,
+    color: colorToUse,
+    isComputer: false,
+    turnOrder,
+    status: 'active',
+  })
 
-  if (joinError) return { error: joinError.message }
-
-  // Deduct stake after successful join
   if (stakeAmount > 0) {
-    const { data: profile } = await supabase.from('profiles').select('balance').eq('id', user.id).single()
-    await supabase.from('profiles').update({ balance: ((profile as any)?.balance ?? 0) - stakeAmount } as any).eq('id', user.id)
+    await db
+      .update(profiles)
+      .set({ balance: sql`${profiles.balance} - ${stakeAmount}` })
+      .where(eq(profiles.id, session.id))
   }
+
+  const players = await db.query.gamePlayers.findMany({
+    where: eq(gamePlayers.roomId, room.id),
+    with: { profile: true },
+  })
+  await pusherServer.trigger(`game_players:${room.id}`, 'player-joined', players)
 
   redirect(`/lobby/${room.id}`)
 }
 
 export async function startGame(roomId: string): Promise<ActionResult> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { error: 'Not authenticated' }
+  const session = await getSessionUser()
+  if (!session) return { error: 'Not authenticated' }
 
-  const { data: room, error: roomError } = await supabase
-    .from('game_rooms')
-    .select('*, game_players(*)')
-    .eq('id', roomId)
-    .single()
+  const room = await db.query.gameRooms.findFirst({
+    where: eq(gameRooms.id, roomId),
+    with: { gamePlayers: true },
+  })
 
-  if (roomError || !room) return { error: 'Room not found' }
-  if (room.host_id !== user.id) return { error: 'Only the host can start the game' }
+  if (!room) return { error: 'Room not found' }
+  if (room.hostId !== session.id) return { error: 'Only the host can start the game' }
 
-  const players = room.game_players
+  const players = room.gamePlayers
   if (players.length < 2) return { error: 'Need at least 2 players to start' }
 
-  const colors: Color[] = players.map((p: { color: Color }) => p.color)
+  const colors: Color[] = players.map((p) => p.color as Color)
   const tokens = buildInitialTokens(colors)
 
-  const { error: stateError } = await supabase
-    .from('game_states')
-    .insert({
-      room_id: roomId,
-      current_player_order: 0,
-      dice_value: null,
-      phase: 'roll',
-      tokens: tokens,
-    })
+  await db.insert(gameStates).values({
+    roomId,
+    currentPlayerOrder: 0,
+    diceValue: null,
+    phase: 'roll',
+    tokens,
+  })
 
-  if (stateError) return { error: stateError.message }
+  await db.update(gameRooms).set({ status: 'playing', startedAt: new Date() }).where(eq(gameRooms.id, roomId))
 
-  const { error: updateError } = await supabase
-    .from('game_rooms')
-    .update({ status: 'playing', started_at: new Date().toISOString() })
-    .eq('id', roomId)
-
-  if (updateError) return { error: updateError.message }
+  await pusherServer.trigger(`game_rooms:${roomId}`, 'status-changed', { status: 'playing' })
 
   revalidatePath(`/lobby/${roomId}`)
   redirect(`/game/${roomId}`)
 }
 
 export async function leaveRoom(roomId: string): Promise<ActionResult> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { error: 'Not authenticated' }
+  const userId = await getSessionUserId()
+  if (!userId) return { error: 'Not authenticated' }
 
-  // Use admin client to bypass RLS — ensures forfeit always saves
-  const admin = createAdminClient()
+  const [myPlayer] = await db
+    .select({ color: gamePlayers.color, turnOrder: gamePlayers.turnOrder })
+    .from(gamePlayers)
+    .where(and(eq(gamePlayers.roomId, roomId), eq(gamePlayers.playerId, userId)))
+    .limit(1)
 
-  const { data: myPlayer } = await admin
-    .from('game_players')
-    .select('color, turn_order')
-    .eq('room_id', roomId)
-    .eq('player_id', user.id)
-    .single()
+  await db
+    .update(gamePlayers)
+    .set({ status: 'forfeited' })
+    .where(and(eq(gamePlayers.roomId, roomId), eq(gamePlayers.playerId, userId)))
 
-  await admin
-    .from('game_players')
-    .update({ status: 'forfeited' })
-    .eq('room_id', roomId)
-    .eq('player_id', user.id)
+  await pusherServer.trigger(`game_players:${roomId}`, 'player-forfeited', { playerId: userId })
 
-  const { data: room } = await admin
-    .from('game_rooms')
-    .select('status')
-    .eq('id', roomId)
-    .single()
+  const [room] = await db.select({ status: gameRooms.status }).from(gameRooms).where(eq(gameRooms.id, roomId)).limit(1)
 
   if (room?.status === 'playing') {
-    const { data: allPlayers } = await admin
-      .from('game_players')
-      .select('player_id, turn_order, status, is_computer')
-      .eq('room_id', roomId)
-      .order('turn_order')
+    const allPlayers = await db
+      .select({
+        playerId: gamePlayers.playerId,
+        turnOrder: gamePlayers.turnOrder,
+        status: gamePlayers.status,
+        isComputer: gamePlayers.isComputer,
+      })
+      .from(gamePlayers)
+      .where(eq(gamePlayers.roomId, roomId))
+      .orderBy(asc(gamePlayers.turnOrder))
 
-    const { data: gameState } = await admin
-      .from('game_states')
-      .select('current_player_order, phase')
-      .eq('room_id', roomId)
-      .single()
+    const [gameState] = await db
+      .select({ currentPlayerOrder: gameStates.currentPlayerOrder, phase: gameStates.phase })
+      .from(gameStates)
+      .where(eq(gameStates.roomId, roomId))
+      .limit(1)
 
-    if (allPlayers && gameState) {
-      const remaining = allPlayers.filter(p =>
-        p.player_id !== user.id && (p.is_computer || p.status === 'active')
-      )
+    if (allPlayers.length && gameState) {
+      const remaining = allPlayers.filter((p) => p.playerId !== userId && (p.isComputer || p.status === 'active'))
 
       if (remaining.length <= 1) {
-        await admin
-          .from('game_rooms')
-          .update({ status: 'finished', finished_at: new Date().toISOString() })
-          .eq('id', roomId)
-        await admin
-          .from('game_states')
-          .update({ phase: 'finished', updated_at: new Date().toISOString() })
-          .eq('room_id', roomId)
-      } else if (myPlayer && gameState.current_player_order === myPlayer.turn_order) {
-        const count = allPlayers.length
-        let next = (myPlayer.turn_order + 1) % count
-        for (let i = 0; i < count; i++) {
-          const candidate = allPlayers.find(p => p.turn_order === next)
-          if (candidate && candidate.player_id !== user.id &&
-              (candidate.is_computer || candidate.status === 'active')) break
-          next = (next + 1) % count
+        await db.update(gameRooms).set({ status: 'finished', finishedAt: new Date() }).where(eq(gameRooms.id, roomId))
+        await db.update(gameStates).set({ phase: 'finished', updatedAt: new Date() }).where(eq(gameStates.roomId, roomId))
+        await pusherServer.trigger(`game_rooms:${roomId}`, 'status-changed', { status: 'finished' })
+      } else if (myPlayer && gameState.currentPlayerOrder === myPlayer.turnOrder) {
+        const total = allPlayers.length
+        let next = (myPlayer.turnOrder + 1) % total
+        for (let i = 0; i < total; i++) {
+          const candidate = allPlayers.find((p) => p.turnOrder === next)
+          if (candidate && candidate.playerId !== userId && (candidate.isComputer || candidate.status === 'active')) break
+          next = (next + 1) % total
         }
-        await admin
-          .from('game_states')
-          .update({ current_player_order: next, dice_value: null, phase: 'roll', updated_at: new Date().toISOString() })
-          .eq('room_id', roomId)
+        const [newState] = await db
+          .update(gameStates)
+          .set({ currentPlayerOrder: next, diceValue: null, phase: 'roll', updatedAt: new Date() })
+          .where(eq(gameStates.roomId, roomId))
+          .returning()
+        if (newState) await pusherServer.trigger(`game_states:${roomId}`, 'state-updated', newState)
       }
     }
   }
@@ -294,113 +265,132 @@ export async function leaveRoom(roomId: string): Promise<ActionResult> {
 const WIN_REWARDS = [10000, 5000, 1000, 200] as const
 
 export async function recordOnlineGameResult(rank: number, roomId: string): Promise<void> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return
+  const session = await getSessionUser()
+  if (!session) return
+  const userId = session.id
 
-  // Idempotency: skip if already recorded for this room
-  const { data: existing } = await supabase
-    .from('game_history')
-    .select('id')
-    .eq('room_id', roomId)
-    .eq('player_id', user.id)
-    .maybeSingle()
+  const [existing] = await db
+    .select({ id: gameHistory.id })
+    .from(gameHistory)
+    .where(and(eq(gameHistory.roomId, roomId), eq(gameHistory.playerId, userId)))
+    .limit(1)
   if (existing) return
 
-  // Compute pot payout for winner
   let potPayout = 0
-  const { data: roomData } = await supabase.from('game_rooms').select('stake').eq('id', roomId).single()
-  const stake = (roomData as any)?.stake ?? 0
+  const [roomData] = await db.select({ stake: gameRooms.stake }).from(gameRooms).where(eq(gameRooms.id, roomId)).limit(1)
+  const stake = roomData?.stake ?? 0
   if (rank === 1 && stake > 0) {
-    const { count } = await supabase
-      .from('game_players')
-      .select('*', { count: 'exact', head: true })
-      .eq('room_id', roomId)
-      .eq('is_computer', false)
-    potPayout = stake * (count ?? 0)
+    const [{ value }] = await db
+      .select({ value: count() })
+      .from(gamePlayers)
+      .where(and(eq(gamePlayers.roomId, roomId), eq(gamePlayers.isComputer, false)))
+    potPayout = stake * value
   }
 
   const reward = WIN_REWARDS[Math.min(rank - 1, WIN_REWARDS.length - 1)]
   const totalReward = reward + potPayout
 
-  const { data: current } = await supabase
-    .from('profiles')
-    .select('games_played, wins, balance')
-    .eq('id', user.id)
-    .single()
+  const [updated] = await db
+    .update(profiles)
+    .set({
+      gamesPlayed: sql`${profiles.gamesPlayed} + 1`,
+      ...(rank === 1 ? { wins: sql`${profiles.wins} + 1` } : {}),
+      balance: sql`${profiles.balance} + ${totalReward}`,
+    })
+    .where(eq(profiles.id, userId))
+    .returning({ balance: profiles.balance })
 
-  if (!current) return
+  await db.insert(gameHistory).values({ roomId, playerId: userId, rank, mode: 'online' })
 
-  await supabase
-    .from('profiles')
-    .update({
-      games_played: (current.games_played ?? 0) + 1,
-      wins: (current.wins ?? 0) + (rank === 1 ? 1 : 0),
-      balance: ((current as any).balance ?? 0) + totalReward,
-    } as any)
-    .eq('id', user.id)
-
-  // Record history for idempotency
-  await supabase.from('game_history').insert({
-    room_id: roomId,
-    player_id: user.id,
-    rank,
-    mode: 'online',
-  })
+  if (updated) await pusherServer.trigger(`profile:${userId}`, 'balance-updated', { balance: updated.balance })
 }
 
 export async function sendInvitation(_prev: ActionResult, formData: FormData): Promise<ActionResult> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { error: 'Not authenticated' }
+  const session = await getSessionUser()
+  if (!session) return { error: 'Not authenticated' }
 
   const roomId = formData.get('roomId') as string
   const phonesRaw = formData.get('phones') as string
-  const phones = phonesRaw.split(',').map(p => p.trim()).filter(Boolean)
+  const phones = phonesRaw.split(',').map((p) => p.trim()).filter(Boolean)
 
   if (phones.length === 0) return { error: 'No phone numbers provided' }
   if (phones.length > 3) return { error: 'Maximum 3 invitations per game' }
 
-  const { data: room } = await supabase
-    .from('game_rooms')
-    .select('room_code, name')
-    .eq('id', roomId)
-    .single()
+  const [room] = await db
+    .select({ roomCode: gameRooms.roomCode, name: gameRooms.name })
+    .from(gameRooms)
+    .where(eq(gameRooms.id, roomId))
+    .limit(1)
 
   if (!room) return { error: 'Room not found' }
 
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('display_name')
-    .eq('id', user.id)
-    .single()
+  const inviterName = session.profile.displayName ?? 'Someone'
 
-  const inviterName = profile?.display_name ?? 'Someone'
-
-  const invitations = phones.map(phone => ({
-    room_id: roomId,
-    invited_phone: phone,
-    invited_by: user.id,
-    status: 'pending',
-  }))
-
-  const { error } = await supabase.from('invitations').insert(invitations)
-  if (error) return { error: error.message }
+  await db.insert(invitations).values(
+    phones.map((phone) => ({
+      roomId,
+      invitedPhone: phone,
+      invitedBy: session.id,
+      status: 'pending' as const,
+    }))
+  )
 
   const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000'
 
   const smsResults = await Promise.allSettled(
-    phones.map(phone =>
+    phones.map((phone) =>
       fetch(`${appUrl}/api/invite`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ to: phone, inviterName, roomCode: room.room_code, roomId }),
+        body: JSON.stringify({ to: phone, inviterName, roomCode: room.roomCode, roomId }),
       })
     )
   )
 
-  const failed = smsResults.filter(r => r.status === 'rejected').length
+  const failed = smsResults.filter((r) => r.status === 'rejected').length
   if (failed > 0) return { warning: `${failed} SMS(es) could not be sent, but invitations were saved.`, success: true }
 
   return { success: true, message: `Invited ${phones.length} friend(s)!` }
+}
+
+/** Fallback re-fetch for realtime desync (e.g. after rejoin) — was a direct client-side Supabase select. */
+export async function getGameState(roomId: string) {
+  const [row] = await db.select().from(gameStates).where(eq(gameStates.roomId, roomId)).limit(1)
+  return row ?? null
+}
+
+/**
+ * Persists live game-board state and broadcasts it. Was a direct client-side
+ * Supabase write in OnlineGameClient.tsx's persistState() — moved server-side
+ * because Pusher's secret key can't be used from the browser.
+ */
+export async function updateGameState(
+  roomId: string,
+  state: { currentPlayerOrder: number; diceValue: number | null; phase: 'roll' | 'move' | 'finished'; tokens: unknown }
+): Promise<void> {
+  const userId = await getSessionUserId()
+  if (!userId) return
+
+  const [row] = await db
+    .update(gameStates)
+    .set({
+      currentPlayerOrder: state.currentPlayerOrder,
+      diceValue: state.diceValue,
+      phase: state.phase,
+      tokens: state.tokens as never,
+      updatedAt: new Date(),
+    })
+    .where(eq(gameStates.roomId, roomId))
+    .returning()
+
+  if (row) await pusherServer.trigger(`game_states:${roomId}`, 'state-updated', row)
+}
+
+/** Marks a room finished once the board reaches a terminal state — was a direct client-side write in OnlineGameClient.tsx. */
+export async function finishGame(roomId: string): Promise<void> {
+  const userId = await getSessionUserId()
+  if (!userId) return
+
+  await db.update(gameRooms).set({ status: 'finished', finishedAt: new Date() }).where(eq(gameRooms.id, roomId))
+  await pusherServer.trigger(`game_rooms:${roomId}`, 'status-changed', { status: 'finished' })
 }

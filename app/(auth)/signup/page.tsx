@@ -1,20 +1,121 @@
 'use client'
 
-import { Suspense, useState, useActionState } from 'react'
+import { Suspense, useEffect, useState } from 'react'
 import { useSearchParams } from 'next/navigation'
 import Link from 'next/link'
-import { signUp } from '@/lib/actions/auth'
+import { useSignUp, useAuth } from '@clerk/nextjs'
 import { AVATARS } from '@/components/PlayerAvatar'
 
 function SignUpContent() {
   const searchParams = useSearchParams()
   const next = searchParams.get('next') ?? ''
 
-  const [state, formAction, pending] = useActionState(signUp, {})
+  const { signUp, fetchStatus } = useSignUp()
+  const { isSignedIn } = useAuth()
+
   const [showPassword, setShowPassword] = useState(false)
   const [selectedAvatar, setSelectedAvatar] = useState(1)
+  const [globalError, setGlobalError] = useState<string | null>(null)
+  // Controlled so a failed submit (e.g. weak password) doesn't force
+  // retyping the name/email too — React resets uncontrolled form fields
+  // after every action, success or failure.
+  const [displayName, setDisplayName] = useState('')
+  const [email, setEmail] = useState('')
 
   const chosen = AVATARS.find(a => a.id === selectedAvatar) ?? AVATARS[0]
+
+  // signUp is a reactive signal — reading signUp.status right after an await
+  // inside a handler can observe a stale value, so completion is detected
+  // here instead, off the hook's own (always-fresh) render value.
+  useEffect(() => {
+    if (signUp.status === 'complete') {
+      void signUp.finalize({
+        navigate: async ({ decorateUrl }) => {
+          // Always a hard navigation: Clerk calls this just before the
+          // session is actually set, so a soft router.push() here can
+          // outrace the cookie write and get bounced by proxy.ts's auth
+          // check on the very next request.
+          window.location.href = decorateUrl(next || '/home')
+        },
+      })
+    }
+  }, [signUp, next])
+
+  // Safety net: if a session becomes active by any path other than the
+  // finalize() call above resolving its navigate callback, this still gets
+  // the user off the blank/hidden screen instead of leaving them stuck.
+  useEffect(() => {
+    if (isSignedIn) window.location.href = next || '/home'
+  }, [isSignedIn, next])
+
+  async function handleSubmit(formData: FormData) {
+    setGlobalError(null)
+    const password = formData.get('password') as string
+
+    const { error } = await signUp.password({ emailAddress: email, password })
+    if (error) {
+      setGlobalError(error.longMessage ?? error.message ?? 'Could not create account.')
+      return
+    }
+
+    await signUp.update({ unsafeMetadata: { display_name: displayName, avatar_id: selectedAvatar } })
+
+    if (signUp.status === 'missing_requirements' && signUp.unverifiedFields.includes('email_address')) {
+      await signUp.verifications.sendEmailCode()
+    }
+  }
+
+  async function handleVerify(formData: FormData) {
+    setGlobalError(null)
+    const code = formData.get('code') as string
+
+    const { error } = await signUp.verifications.verifyEmailCode({ code })
+    if (error) {
+      setGlobalError(error.longMessage ?? error.message ?? 'Invalid code, please try again.')
+    }
+  }
+
+  if (signUp.status === 'complete' || isSignedIn) return null
+
+  // Email verification step — shown once Clerk requires it after account creation
+  if (signUp.status === 'missing_requirements' && signUp.unverifiedFields.includes('email_address')) {
+    return (
+      <div>
+        <h1 className="text-3xl font-black text-amber-900 mb-1">Verify Your Email</h1>
+        <p className="text-amber-700 mb-8">We sent a code to your email address.</p>
+
+        {globalError && (
+          <div className="mb-4 p-3 bg-red-100 border border-red-300 rounded-xl text-red-700 text-sm">
+            {globalError}
+          </div>
+        )}
+
+        <form action={handleVerify} className="flex flex-col gap-4">
+          <input
+            name="code"
+            type="text"
+            required
+            placeholder="Verification code"
+            className="w-full px-4 py-3 rounded-xl border-2 border-amber-200 focus:border-amber-500 focus:outline-none bg-white text-amber-900 placeholder:text-amber-300"
+          />
+          <button
+            type="submit"
+            disabled={fetchStatus === 'fetching'}
+            className="w-full py-3 rounded-2xl bg-amber-600 text-white font-bold text-lg hover:bg-amber-700 disabled:opacity-60 transition-colors"
+          >
+            {fetchStatus === 'fetching' ? 'Verifying…' : 'Verify'}
+          </button>
+        </form>
+
+        <button
+          onClick={() => signUp.verifications.sendEmailCode()}
+          className="mt-6 text-center w-full text-amber-700 underline text-sm"
+        >
+          Resend code
+        </button>
+      </div>
+    )
+  }
 
   return (
     <div>
@@ -27,16 +128,13 @@ function SignUpContent() {
         </p>
       )}
 
-      {state?.error && (
+      {globalError && (
         <div className="mb-4 p-3 bg-red-100 border border-red-300 rounded-xl text-red-700 text-sm">
-          {state.error}
+          {globalError}
         </div>
       )}
 
-      <form action={formAction} className="flex flex-col gap-4">
-        {next && <input type="hidden" name="next" value={next} />}
-        <input type="hidden" name="avatarId" value={selectedAvatar} />
-
+      <form action={handleSubmit} className="flex flex-col gap-4">
         {/* Avatar picker */}
         <div>
           <label className="block text-sm font-semibold text-amber-800 mb-2">Choose Your Avatar</label>
@@ -76,6 +174,8 @@ function SignUpContent() {
             name="displayName"
             type="text"
             required
+            value={displayName}
+            onChange={e => setDisplayName(e.target.value)}
             placeholder="How should we call you?"
             className="w-full px-4 py-3 rounded-xl border-2 border-amber-200 focus:border-amber-500 focus:outline-none bg-white text-amber-900 placeholder:text-amber-300"
           />
@@ -87,6 +187,8 @@ function SignUpContent() {
             name="email"
             type="email"
             required
+            value={email}
+            onChange={e => setEmail(e.target.value)}
             placeholder="you@example.com"
             className="w-full px-4 py-3 rounded-xl border-2 border-amber-200 focus:border-amber-500 focus:outline-none bg-white text-amber-900 placeholder:text-amber-300"
           />
@@ -114,11 +216,14 @@ function SignUpContent() {
 
         <button
           type="submit"
-          disabled={pending}
+          disabled={fetchStatus === 'fetching'}
           className="w-full py-3 rounded-2xl bg-amber-600 text-white font-bold text-lg hover:bg-amber-700 disabled:opacity-60 transition-colors mt-2"
         >
-          {pending ? 'Creating account…' : 'Create Account'}
+          {fetchStatus === 'fetching' ? 'Creating account…' : 'Create Account'}
         </button>
+
+        {/* Required for sign-up flows — Clerk's bot sign-up protection is enabled by default */}
+        <div id="clerk-captcha" />
       </form>
 
       <p className="text-center text-amber-700 mt-6">

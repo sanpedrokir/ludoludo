@@ -1,24 +1,19 @@
 import Link from 'next/link'
-import { createClient } from '@/lib/supabase/server'
+import { getSessionUser } from '@/lib/auth/getUser'
 import HomeClientSection from './HomeClientSection'
 import PlayerAvatar from '@/components/PlayerAvatar'
 
 export const dynamic = 'force-dynamic'
 
 export default async function HomePage() {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
+  const session = await getSessionUser()
+  const profile = session?.profile ?? null
 
-
-  const { data: profile } = user
-    ? await supabase.from('profiles').select('*').eq('id', user.id).single()
-    : { data: null }
-
-  const balance: number = (profile as any)?.balance ?? 0
+  const balance = profile?.balance ?? 0
   const today = new Date().toISOString().split('T')[0]
-  const canClaim = (profile as any)?.last_daily_reward !== today
+  const canClaim = profile?.lastDailyReward !== today
 
-  const avatarId: number = (profile as any)?.avatar_id ?? 1
+  const avatarId = profile?.avatarId ?? 1
 
   return (
     <div className="flex flex-col flex-1 px-5 py-6 gap-5">
@@ -28,15 +23,15 @@ export default async function HomePage() {
         )}
         <div>
           <h2 className="text-2xl font-black text-amber-900">
-            Hey, {profile?.display_name ?? 'Player'}! 👋
+            Hey, {profile?.displayName ?? 'Player'}! 👋
           </h2>
           <p className="text-amber-700 text-sm mt-0.5">Ready to roll the dice?</p>
         </div>
       </div>
 
       {/* Balance + daily reward (client section for immediate updates + sound) */}
-      {profile && user && (
-        <HomeClientSection userId={user.id} initialBalance={balance} canClaim={canClaim} />
+      {profile && session && (
+        <HomeClientSection userId={session.id} initialBalance={balance} canClaim={canClaim} />
       )}
 
       {/* Game options */}
@@ -106,7 +101,7 @@ export default async function HomePage() {
           <h3 className="text-amber-900 font-bold mb-3 text-sm">Your Stats</h3>
           <div className="grid grid-cols-3 gap-2 text-center">
             <div>
-              <div className="text-2xl font-black text-amber-700">{profile.games_played ?? 0}</div>
+              <div className="text-2xl font-black text-amber-700">{profile.gamesPlayed ?? 0}</div>
               <div className="text-xs text-amber-500">Played</div>
             </div>
             <div>
@@ -115,8 +110,8 @@ export default async function HomePage() {
             </div>
             <div>
               <div className="text-2xl font-black text-amber-500">
-                {(profile.games_played ?? 0) > 0
-                  ? Math.round(((profile.wins ?? 0) / profile.games_played) * 100)
+                {(profile.gamesPlayed ?? 0) > 0
+                  ? Math.round(((profile.wins ?? 0) / profile.gamesPlayed) * 100)
                   : 0}%
               </div>
               <div className="text-xs text-amber-500">Win Rate</div>

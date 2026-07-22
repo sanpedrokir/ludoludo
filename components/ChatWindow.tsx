@@ -1,27 +1,25 @@
 'use client'
 
-import { useState, useEffect, useRef, useMemo } from 'react'
-import { createClient } from '@/lib/supabase/client'
+import { useState, useEffect, useRef, useCallback } from 'react'
+import { usePusherChannel } from '@/lib/pusher/usePusherChannel'
+import { getMessages, sendMessage } from '@/lib/actions/chat'
 import { AVATARS } from '@/components/PlayerAvatar'
 
 interface Message {
   id: string
-  user_id: string
-  display_name: string
-  avatar_id: number
+  userId: string
+  displayName: string
+  avatarId: number
   content: string
-  created_at: string
+  createdAt: string
 }
 
 interface Props {
   roomId: string
   currentUserId: string
-  displayName: string
-  avatarId: number
 }
 
-export default function ChatWindow({ roomId, currentUserId, displayName, avatarId }: Props) {
-  const supabase = useMemo(() => createClient(), [])
+export default function ChatWindow({ roomId, currentUserId }: Props) {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
@@ -30,24 +28,14 @@ export default function ChatWindow({ roomId, currentUserId, displayName, avatarI
   const inputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
-    supabase
-      .from('messages')
-      .select('*')
-      .eq('room_id', roomId)
-      .order('created_at', { ascending: true })
-      .limit(100)
-      .then(({ data }) => { if (data) setMessages(data as Message[]) })
+    getMessages(roomId).then((data) => setMessages(data as unknown as Message[]))
+  }, [roomId])
 
-    const channel = supabase
-      .channel(`chat:${roomId}`)
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `room_id=eq.${roomId}` },
-        (payload) => {
-          setMessages(prev => [...prev, payload.new as Message])
-        })
-      .subscribe()
+  const onNewMessage = useCallback((payload: Message) => {
+    setMessages(prev => [...prev, payload])
+  }, [])
 
-    return () => { supabase.removeChannel(channel) }
-  }, [roomId, supabase])
+  usePusherChannel(`chat:${roomId}`, [{ event: 'new-message', onEvent: onNewMessage }])
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -59,15 +47,9 @@ export default function ChatWindow({ roomId, currentUserId, displayName, avatarI
     setSending(true)
     setSendError(null)
     setInput('')
-    const { error } = await supabase.from('messages').insert({
-      room_id: roomId,
-      user_id: currentUserId,
-      display_name: displayName,
-      avatar_id: avatarId,
-      content,
-    })
+    const { error } = await sendMessage(roomId, content)
     if (error) {
-      setSendError('Could not send — run the SQL migration in Supabase first.')
+      setSendError(error)
       setInput(content)
     }
     setSending(false)
@@ -92,15 +74,15 @@ export default function ChatWindow({ roomId, currentUserId, displayName, avatarI
           <p className="text-center text-amber-500 text-xs py-2">No messages yet — say hi! 👋</p>
         )}
         {messages.map(msg => {
-          const isMe = msg.user_id === currentUserId
-          const avatar = AVATARS.find(a => a.id === (msg.avatar_id ?? 1)) ?? AVATARS[0]
+          const isMe = msg.userId === currentUserId
+          const avatar = AVATARS.find(a => a.id === (msg.avatarId ?? 1)) ?? AVATARS[0]
           return (
             <div key={msg.id} className={`flex gap-2 ${isMe ? 'flex-row-reverse' : 'flex-row'}`}>
               <div className={`w-6 h-6 rounded-md bg-gradient-to-br ${avatar.bg} flex items-center justify-center text-sm flex-shrink-0`}>
                 {avatar.emoji}
               </div>
               <div className={`flex flex-col max-w-[75%] ${isMe ? 'items-end' : 'items-start'}`}>
-                <span className="text-[9px] text-amber-400 font-semibold mb-0.5 px-1">{isMe ? 'You' : msg.display_name}</span>
+                <span className="text-[9px] text-amber-400 font-semibold mb-0.5 px-1">{isMe ? 'You' : msg.displayName}</span>
                 <div className={`px-3 py-1.5 rounded-2xl text-sm break-words ${
                   isMe
                     ? 'bg-amber-600 text-white rounded-tr-sm'

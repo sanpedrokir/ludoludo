@@ -1,33 +1,35 @@
-import { createClient } from '@/lib/supabase/server'
+import { gt, desc, asc } from 'drizzle-orm'
+import { db } from '@/lib/db'
+import { profiles } from '@/lib/db/schema'
+import { getSessionUserId } from '@/lib/auth/getUser'
 import LeaderboardClient from './LeaderboardClient'
 
 export const revalidate = 60
 
 export default async function LeaderboardPage({ searchParams }: { searchParams: Promise<{ tab?: string }> }) {
-  const supabase = await createClient()
   const { tab } = await searchParams
 
-  const [{ data: { user } }, { data: byWins }, { data: byBalance }] = await Promise.all([
-    supabase.auth.getUser(),
-    supabase
-      .from('profiles')
-      .select('id, display_name, avatar_id, wins, games_played, balance')
-      .gt('games_played', 0)
-      .order('wins', { ascending: false })
-      .order('games_played', { ascending: true })
-      .limit(50),
-    supabase
-      .from('profiles')
-      .select('id, display_name, avatar_id, wins, games_played, balance')
-      .order('balance', { ascending: false })
-      .limit(50),
+  const cols = {
+    id: profiles.id,
+    displayName: profiles.displayName,
+    avatarId: profiles.avatarId,
+    wins: profiles.wins,
+    gamesPlayed: profiles.gamesPlayed,
+    balance: profiles.balance,
+  }
+
+  const [userId, byWins, byBalance] = await Promise.all([
+    getSessionUserId(),
+    db.select(cols).from(profiles).where(gt(profiles.gamesPlayed, 0))
+      .orderBy(desc(profiles.wins), asc(profiles.gamesPlayed)).limit(50),
+    db.select(cols).from(profiles).orderBy(desc(profiles.balance)).limit(50),
   ])
 
   return (
     <LeaderboardClient
-      currentUserId={user?.id ?? null}
-      byWins={byWins ?? []}
-      byBalance={byBalance ?? []}
+      currentUserId={userId}
+      byWins={byWins}
+      byBalance={byBalance}
       initialTab={tab === 'rich' ? 'rich' : 'wins'}
     />
   )

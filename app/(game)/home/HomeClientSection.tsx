@@ -1,7 +1,7 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
-import { createClient } from '@/lib/supabase/client'
+import { useState, useRef, useCallback } from 'react'
+import { usePusherChannel } from '@/lib/pusher/usePusherChannel'
 import { claimDailyReward } from '@/lib/actions/economy'
 import { playCashSound } from '@/lib/sounds'
 
@@ -18,36 +18,15 @@ export default function HomeClientSection({ userId, initialBalance, canClaim }: 
   const [claiming, setClaiming] = useState(false)
   const prevRef = useRef(initialBalance)
 
-  useEffect(() => {
-    const supabase = createClient()
-    let cleanup: (() => void) | undefined
+  const onBalanceUpdated = useCallback((payload: { balance: number }) => {
+    if (typeof payload.balance === 'number') {
+      if (payload.balance > prevRef.current) playCashSound()
+      prevRef.current = payload.balance
+      setBalance(payload.balance)
+    }
+  }, [])
 
-    supabase.from('profiles').select('balance').eq('id', userId).single()
-      .then(({ data }) => {
-        if (data) {
-          setBalance((data as any).balance ?? 0)
-          prevRef.current = (data as any).balance ?? 0
-        }
-      })
-
-    try {
-      const ch = supabase
-        .channel(`bal-home-${userId}`)
-        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'profiles', filter: `id=eq.${userId}` },
-          (payload) => {
-            const b = (payload.new as Record<string, unknown>).balance
-            if (typeof b === 'number') {
-              if (b > prevRef.current) playCashSound()
-              prevRef.current = b
-              setBalance(b)
-            }
-          })
-        .subscribe()
-      cleanup = () => { try { supabase.removeChannel(ch) } catch {} }
-    } catch {}
-
-    return () => cleanup?.()
-  }, [userId])
+  usePusherChannel(`profile:${userId}`, [{ event: 'balance-updated', onEvent: onBalanceUpdated }])
 
   async function handleClaim() {
     setClaiming(true)

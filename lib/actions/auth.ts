@@ -1,127 +1,68 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
-import { redirect } from 'next/navigation'
-import { createClient } from '@/lib/supabase/server'
-import { createAdminClient } from '@/lib/supabase/admin'
+import { eq, and, inArray, ne } from 'drizzle-orm'
+import { db } from '@/lib/db'
+import { gamePlayers, gameRooms, profiles } from '@/lib/db/schema'
+import { getSessionUser } from '@/lib/auth/getUser'
 
 type ActionResult = { error?: string; success?: boolean; message?: string }
 
-function safeNext(next: FormDataEntryValue | null): string {
-  const s = typeof next === 'string' ? next : ''
-  return s.startsWith('/') ? s : '/home'
-}
-
-export async function signUp(_prev: ActionResult, formData: FormData): Promise<ActionResult> {
-  const supabase = await createClient()
-
-  const email = formData.get('email') as string
-  const password = formData.get('password') as string
-  const displayName = formData.get('displayName') as string
-  const avatarId = parseInt(formData.get('avatarId') as string) || 1
-  const next = safeNext(formData.get('next'))
-
-  const { data, error } = await supabase.auth.signUp({
-    email,
-    password,
-    options: { data: { display_name: displayName, avatar_id: avatarId } },
-  })
-
-  if (error) return { error: error.message }
-
-  if (data.user) {
-    await supabase
-      .from('profiles')
-      .update({ avatar_id: avatarId })
-      .eq('id', data.user.id)
-  }
-
-  revalidatePath('/', 'layout')
-  redirect(next)
-}
-
-export async function signInWithPassword(_prev: ActionResult, formData: FormData): Promise<ActionResult> {
-  const supabase = await createClient()
-
-  const email = formData.get('email') as string
-  const password = formData.get('password') as string
-  const next = safeNext(formData.get('next'))
-
-  const { error } = await supabase.auth.signInWithPassword({ email, password })
-
-  if (error) return { error: error.message }
-
-  revalidatePath('/', 'layout')
-  redirect(next)
-}
-
-export async function signOut() {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-
-  if (user) {
-    // Use admin client to bypass RLS — guarantees cleanup always works
-    const admin = createAdminClient()
-
-    // Get all rooms this user is a player in
-    const { data: myRooms } = await admin
-      .from('game_players')
-      .select('room_id')
-      .eq('player_id', user.id)
-
-    const roomIds = (myRooms ?? []).map((r: { room_id: string }) => r.room_id)
-
-    // Forfeit all active rows for this user
-    await admin
-      .from('game_players')
-      .update({ status: 'forfeited' })
-      .eq('player_id', user.id)
-      .eq('status', 'active')
-
-    if (roomIds.length > 0) {
-      // Find rooms where no other human player is still active
-      const { data: otherActive } = await admin
-        .from('game_players')
-        .select('room_id')
-        .in('room_id', roomIds)
-        .neq('player_id', user.id)
-        .eq('is_computer', false)
-        .eq('status', 'active')
-
-      const roomsWithOthers = new Set((otherActive ?? []).map((r: { room_id: string }) => r.room_id))
-      const roomsToEnd = roomIds.filter((id: string) => !roomsWithOthers.has(id))
-
-      if (roomsToEnd.length > 0) {
-        await admin
-          .from('game_rooms')
-          .update({ status: 'finished', finished_at: new Date().toISOString() })
-          .in('id', roomsToEnd)
-          .eq('status', 'playing')
-      }
-    }
-  }
-
-  await supabase.auth.signOut()
-  revalidatePath('/', 'layout')
-  redirect('/')
-}
-
 export async function updateProfile(_prev: ActionResult, formData: FormData): Promise<ActionResult> {
-  const supabase = await createClient()
-
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { error: 'Not authenticated' }
+  const session = await getSessionUser()
+  if (!session) return { error: 'Not authenticated' }
 
   const displayName = formData.get('displayName') as string
   const avatarId = parseInt(formData.get('avatarId') as string) || 1
 
-  const { error } = await supabase
-    .from('profiles')
-    .update({ display_name: displayName, avatar_id: avatarId })
-    .eq('id', user.id)
-
-  if (error) return { error: error.message }
+  await db.update(profiles).set({ displayName, avatarId }).where(eq(profiles.id, session.id))
 
   revalidatePath('/profile')
   return { success: true }
+}
+
+/**
+ * Forfeits this user's active games and ends any room left with no other
+ * active human, so signing out doesn't strand their opponents mid-game.
+ * Called from the client right before Clerk's own signOut() ends the
+ * session — see components/SignOutButton.tsx.
+ */
+export async function cleanupOnSignOut(): Promise<void> {
+  const session = await getSessionUser()
+  if (!session) return
+  const userId = session.id
+
+  const myRooms = await db
+    .select({ roomId: gamePlayers.roomId })
+    .from(gamePlayers)
+    .where(eq(gamePlayers.playerId, userId))
+
+  const roomIds = myRooms.map((r) => r.roomId)
+
+  await db
+    .update(gamePlayers)
+    .set({ status: 'forfeited' })
+    .where(and(eq(gamePlayers.playerId, userId), eq(gamePlayers.status, 'active')))
+
+  if (roomIds.length === 0) return
+
+  const otherActive = await db
+    .select({ roomId: gamePlayers.roomId })
+    .from(gamePlayers)
+    .where(and(
+      inArray(gamePlayers.roomId, roomIds),
+      ne(gamePlayers.playerId, userId),
+      eq(gamePlayers.isComputer, false),
+      eq(gamePlayers.status, 'active'),
+    ))
+
+  const roomsWithOthers = new Set(otherActive.map((r) => r.roomId))
+  const roomsToEnd = roomIds.filter((id) => !roomsWithOthers.has(id))
+
+  if (roomsToEnd.length > 0) {
+    await db
+      .update(gameRooms)
+      .set({ status: 'finished', finishedAt: new Date() })
+      .where(and(inArray(gameRooms.id, roomsToEnd), eq(gameRooms.status, 'playing')))
+  }
 }

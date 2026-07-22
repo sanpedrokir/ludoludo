@@ -1,118 +1,98 @@
 'use server'
 
-import { createClient } from '@/lib/supabase/server'
+import { eq, gt, desc, sql } from 'drizzle-orm'
+import { db } from '@/lib/db'
+import { profiles, userCollection } from '@/lib/db/schema'
+import { getSessionUser } from '@/lib/auth/getUser'
+import { pusherServer } from '@/lib/pusher/server'
 
 type EconomyResult = { success: boolean; amount?: number; error?: string }
 
 export async function claimDailyReward(): Promise<EconomyResult> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { success: false, error: 'Not authenticated' }
-
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('balance, last_daily_reward, wins')
-    .eq('id', user.id)
-    .single()
-
-  if (!profile) return { success: false, error: 'Profile not found' }
+  const session = await getSessionUser()
+  if (!session) return { success: false, error: 'Not authenticated' }
 
   const today = new Date().toISOString().split('T')[0]
-  if ((profile as any).last_daily_reward === today) {
+  if (session.profile.lastDailyReward === today) {
     return { success: false, error: 'Already claimed today' }
   }
 
-  const { data: topPlayers } = await supabase
-    .from('profiles')
-    .select('id')
-    .gt('wins', 0)
-    .order('wins', { ascending: false })
+  const topPlayers = await db
+    .select({ id: profiles.id })
+    .from(profiles)
+    .where(gt(profiles.wins, 0))
+    .orderBy(desc(profiles.wins))
     .limit(3)
 
   let leaderBonus = 0
-  if (topPlayers) {
-    const rank = topPlayers.findIndex(p => p.id === user.id)
-    if (rank === 0) leaderBonus = 800
-    else if (rank === 1) leaderBonus = 500
-    else if (rank === 2) leaderBonus = 300
-  }
+  const rank = topPlayers.findIndex((p) => p.id === session.id)
+  if (rank === 0) leaderBonus = 800
+  else if (rank === 1) leaderBonus = 500
+  else if (rank === 2) leaderBonus = 300
 
   const total = 800 + leaderBonus
 
-  const { error } = await supabase
-    .from('profiles')
-    .update({
-      balance: ((profile as any).balance ?? 0) + total,
-      last_daily_reward: today,
-    } as any)
-    .eq('id', user.id)
+  const [updated] = await db
+    .update(profiles)
+    .set({ balance: sql`${profiles.balance} + ${total}`, lastDailyReward: today })
+    .where(eq(profiles.id, session.id))
+    .returning({ balance: profiles.balance })
 
-  if (error) return { success: false, error: error.message }
+  if (updated) await pusherServer.trigger(`profile:${session.id}`, 'balance-updated', { balance: updated.balance })
 
   return { success: true, amount: total }
 }
 
+export async function getMyBalance(): Promise<number> {
+  const session = await getSessionUser()
+  return session?.profile.balance ?? 0
+}
+
+export async function getMyBalanceAndAvatar(): Promise<{ balance: number; avatarId: number }> {
+  const session = await getSessionUser()
+  return { balance: session?.profile.balance ?? 0, avatarId: session?.profile.avatarId ?? 1 }
+}
+
 export async function addBalance(amount: number): Promise<void> {
   if (amount === 0) return
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return
+  const userId = await getSessionUser().then((s) => s?.id)
+  if (!userId) return
 
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('balance')
-    .eq('id', user.id)
-    .single()
+  const [updated] = await db
+    .update(profiles)
+    .set({ balance: sql`${profiles.balance} + ${amount}` })
+    .where(eq(profiles.id, userId))
+    .returning({ balance: profiles.balance })
 
-  if (!profile) return
-
-  const newBalance = ((profile as any).balance ?? 0) + amount
-  await supabase
-    .from('profiles')
-    .update({ balance: newBalance } as any)
-    .eq('id', user.id)
+  if (updated) await pusherServer.trigger(`profile:${userId}`, 'balance-updated', { balance: updated.balance })
 }
 
 export async function purchaseItem(
   itemId: string,
   price: number
 ): Promise<{ success: boolean; error?: string }> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { success: false, error: 'Not authenticated' }
+  const session = await getSessionUser()
+  if (!session) return { success: false, error: 'Not authenticated' }
 
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('balance')
-    .eq('id', user.id)
-    .single()
+  if (session.profile.balance < price) return { success: false, error: 'Insufficient balance' }
 
-  if (!profile) return { success: false, error: 'Profile not found' }
-
-  const bal = (profile as any).balance ?? 0
-  if (bal < price) return { success: false, error: 'Insufficient balance' }
-
-  const { data: existing } = await supabase
-    .from('user_collection')
-    .select('id')
-    .eq('user_id', user.id)
-    .eq('item_id', itemId)
-    .maybeSingle()
+  const [existing] = await db
+    .select({ id: userCollection.id })
+    .from(userCollection)
+    .where(sql`${userCollection.userId} = ${session.id} and ${userCollection.itemId} = ${itemId}`)
+    .limit(1)
 
   if (existing) return { success: false, error: 'Already owned' }
 
-  const { error: deductErr } = await supabase
-    .from('profiles')
-    .update({ balance: bal - price } as any)
-    .eq('id', user.id)
+  const [updated] = await db
+    .update(profiles)
+    .set({ balance: sql`${profiles.balance} - ${price}` })
+    .where(eq(profiles.id, session.id))
+    .returning({ balance: profiles.balance })
 
-  if (deductErr) return { success: false, error: deductErr.message }
+  await db.insert(userCollection).values({ userId: session.id, itemId })
 
-  const { error: collectErr } = await supabase
-    .from('user_collection')
-    .insert({ user_id: user.id, item_id: itemId })
-
-  if (collectErr) return { success: false, error: collectErr.message }
+  if (updated) await pusherServer.trigger(`profile:${session.id}`, 'balance-updated', { balance: updated.balance })
 
   return { success: true }
 }

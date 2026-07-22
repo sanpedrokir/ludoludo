@@ -1,52 +1,43 @@
-import { createClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
+import { eq } from 'drizzle-orm'
+import { db } from '@/lib/db'
+import { gameRooms, gameStates } from '@/lib/db/schema'
+import { getSessionUser } from '@/lib/auth/getUser'
 import OnlineGameClient from './OnlineGameClient'
 
 export default async function OnlineGamePage({ params }: { params: Promise<{ roomId: string }> }) {
   const { roomId } = await params
-  const supabase = await createClient()
+  const session = await getSessionUser()
+  if (!session) redirect('/signin')
 
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) redirect('/signin')
-
-  const { data: room } = await supabase
-    .from('game_rooms')
-    .select('*, game_players(*, profiles(display_name, avatar_id))')
-    .eq('id', roomId)
-    .single()
+  const room = await db.query.gameRooms.findFirst({
+    where: eq(gameRooms.id, roomId),
+    with: { gamePlayers: { with: { profile: true } } },
+  })
 
   if (!room || room.status !== 'playing') redirect('/home')
 
-  const { data: gameState } = await supabase
-    .from('game_states')
-    .select('*')
-    .eq('room_id', roomId)
-    .single()
+  const [gameState] = await db.select().from(gameStates).where(eq(gameStates.roomId, roomId)).limit(1)
 
   // If game state is missing or tokens aren't a valid array, we can't render the game
   if (!gameState || !Array.isArray(gameState.tokens)) redirect('/home')
 
-  const { data: myProfile } = await supabase
-    .from('profiles')
-    .select('display_name')
-    .eq('id', user.id)
-    .single()
-
-  const myPlayer = room.game_players.find((p: { player_id: string }) => p.player_id === user.id)
+  const myPlayer = room.gamePlayers.find((p) => p.playerId === session.id)
 
   // If the user is forfeited (no longer an active participant), send them home
   if (myPlayer?.status === 'forfeited') redirect('/home')
-  const stake = (room as any).stake ?? 0
-  const numHuman = room.game_players.filter((p: { is_computer: boolean }) => !p.is_computer).length
+
+  const stake = room.stake
+  const numHuman = room.gamePlayers.filter((p) => !p.isComputer).length
   const pot = stake * numHuman
 
   return (
     <OnlineGameClient
       room={room}
       initialGameState={gameState}
-      currentUserId={user.id}
+      currentUserId={session.id}
       myColor={myPlayer?.color ?? null}
-      myDisplayName={myProfile?.display_name ?? 'Player'}
+      initialBalance={session.profile.balance}
       pot={pot}
     />
   )

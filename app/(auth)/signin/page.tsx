@@ -1,30 +1,69 @@
 'use client'
 
-import { Suspense, useState, useActionState } from 'react'
+import { Suspense, useEffect, useState } from 'react'
 import { useSearchParams } from 'next/navigation'
 import Link from 'next/link'
-import { signInWithPassword } from '@/lib/actions/auth'
+import { useSignIn, useAuth } from '@clerk/nextjs'
 
 function SignInContent() {
   const searchParams = useSearchParams()
   const next = searchParams.get('next') ?? ''
 
+  const { signIn, fetchStatus } = useSignIn()
+  const { isSignedIn } = useAuth()
+
   const [showPassword, setShowPassword] = useState(false)
-  const [state, formAction, pending] = useActionState(signInWithPassword, { error: undefined })
+  const [globalError, setGlobalError] = useState<string | null>(null)
+
+  // signIn is a reactive signal — reading signIn.status right after an await
+  // can observe a stale value, so completion is detected here instead, off
+  // the hook's own (always-fresh) render value.
+  useEffect(() => {
+    if (signIn.status === 'complete') {
+      void signIn.finalize({
+        navigate: async ({ decorateUrl }) => {
+          // Always a hard navigation: Clerk calls this just before the
+          // session is actually set, so a soft router.push() here can
+          // outrace the cookie write and get bounced by proxy.ts's auth
+          // check on the very next request.
+          window.location.href = decorateUrl(next || '/home')
+        },
+      })
+    }
+  }, [signIn, next])
+
+  // Safety net: if a session becomes active by any path other than the
+  // finalize() call above resolving its navigate callback, this still gets
+  // the user off the blank/hidden screen instead of leaving them stuck.
+  useEffect(() => {
+    if (isSignedIn) window.location.href = next || '/home'
+  }, [isSignedIn, next])
+
+  async function handleSubmit(formData: FormData) {
+    setGlobalError(null)
+    const email = formData.get('email') as string
+    const password = formData.get('password') as string
+
+    const { error } = await signIn.password({ identifier: email, password })
+    if (error) {
+      setGlobalError(error.longMessage ?? error.message ?? 'Could not sign in.')
+    }
+  }
+
+  if (isSignedIn) return null
 
   return (
     <div>
       <h1 className="text-3xl font-black text-amber-900 mb-1">Welcome Back</h1>
       <p className="text-amber-700 mb-8">Sign in to keep playing.</p>
 
-      {state?.error && (
+      {globalError && (
         <div className="mb-4 p-3 bg-red-100 border border-red-300 rounded-xl text-red-700 text-sm">
-          {state.error}
+          {globalError}
         </div>
       )}
 
-      <form action={formAction} className="flex flex-col gap-4">
-        {next && <input type="hidden" name="next" value={next} />}
+      <form action={handleSubmit} className="flex flex-col gap-4">
         <input
           name="email"
           type="email"
@@ -50,10 +89,10 @@ function SignInContent() {
         </div>
         <button
           type="submit"
-          disabled={pending}
+          disabled={fetchStatus === 'fetching'}
           className="w-full py-3 rounded-2xl bg-amber-600 text-white font-bold text-lg hover:bg-amber-700 disabled:opacity-60 transition-colors"
         >
-          {pending ? 'Signing in…' : 'Sign In'}
+          {fetchStatus === 'fetching' ? 'Signing in…' : 'Sign In'}
         </button>
       </form>
 
